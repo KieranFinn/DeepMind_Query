@@ -62,6 +62,8 @@ async def update_region(region_id: uuid.UUID, name: str = Query(..., description
     """Update region name"""
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="Name cannot be empty")
+    if len(name.strip()) > 100:
+        raise HTTPException(status_code=400, detail="Name cannot exceed 100 characters")
     async with await store.lock():
         if not store.update_region_name(str(region_id), name.strip()):
             raise HTTPException(status_code=404, detail="Region not found")
