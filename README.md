@@ -60,7 +60,7 @@ npm run dev
 
 - **后端**: FastAPI, Pydantic, httpx, SSE
 - **前端**: React, React Flow, Zustand, Tailwind CSS
-- **LLM**: OpenAI API (默认 gpt-4o-mini)
+- **LLM**: MiniMax Anthropic API (默认 MiniMax-M2.7)
 
 ## License
 

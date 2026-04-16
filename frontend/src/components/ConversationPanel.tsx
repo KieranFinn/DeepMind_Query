@@ -1,21 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import rehypeHighlight from 'rehype-highlight';
 import { useStore } from '../store';
-
-function findNode(node: any, id: string | null): any {
-  if (!node || !id) return null;
-  if (node.id === id) return node;
-  for (const child of node.children || []) {
-    const found = findNode(child, id);
-    if (found) return found;
-  }
-  return null;
-}
 
 export default function ConversationPanel() {
   const {
-    activeTree, isLoading, streamingMessage,
-    sendUserMessage, createBranch, cancelStreaming,
-    getActiveRegion, getActiveSession
+    isLoading, streamingMessage,
+    sendUserMessage, createChildNode, cancelStreaming,
+    getActiveRegion, getActiveNode
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -23,32 +18,35 @@ export default function ConversationPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeRegion = getActiveRegion();
-  const activeSession = getActiveSession();
-  const activeNodeId = activeTree?.id || null;
-  const activeNode = activeTree;
+  const activeNode = getActiveNode();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeNode?.messages, streamingMessage]);
+  }, [activeNode, streamingMessage]);
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || isLoading || !activeTree) return;
+    if (!input.trim() || isLoading || !activeNode) return;
     const content = input.trim();
     setInput('');
     await sendUserMessage(content);
-  }, [input, isLoading, activeTree, sendUserMessage]);
+  }, [input, isLoading, activeNode, sendUserMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
+    // Ctrl/Cmd + Enter to create branch
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleBranch();
+    }
   };
 
   const handleBranch = async () => {
-    if (!activeTree) return;
-    // Create branch from root node
-    await createBranch(activeTree.id, `分支 ${activeTree.children.length + 1}`);
+    if (!activeNode) return;
+    const nodeId = String(activeNode.id);
+    await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
   };
 
   const handleCancel = () => {
@@ -69,7 +67,7 @@ export default function ConversationPanel() {
     );
   }
 
-  if (!activeSession) {
+  if (!activeNode) {
     return (
       <div className="flex flex-col h-full items-center justify-center" style={{ color: 'var(--text-muted)' }}>
         <p className="text-sm">在此知识区创建新会话</p>
@@ -77,13 +75,7 @@ export default function ConversationPanel() {
     );
   }
 
-  if (!activeTree) {
-    return (
-      <div className="flex flex-col h-full items-center justify-center" style={{ color: 'var(--text-muted)' }}>
-        <p className="text-sm">加载中...</p>
-      </div>
-    );
-  }
+  const messages = activeNode.messages || [];
 
   return (
     <div className="flex flex-col h-full">
@@ -94,27 +86,27 @@ export default function ConversationPanel() {
       >
         <div className="min-w-0 flex-1">
           <h2 className="font-semibold text-sm truncate" style={{ color: 'var(--text-primary)' }}>
-            {activeTree.title}
+            {activeNode.title}
           </h2>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
             <span style={{ color: activeRegion.color }}>{activeRegion.name}</span>
             {' · '}
-            {activeTree.messages.length} 条消息 · {activeTree.children.length} 个分支
+            {messages.length} 条消息
           </p>
         </div>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {activeTree.messages.length === 0 && !streamingMessage && (
+        {messages.length === 0 && !streamingMessage && (
           <p className="text-center text-sm animate-fade-in" style={{ color: 'var(--text-muted)' }}>
             开始对话吧！
           </p>
         )}
 
-        {activeTree.messages.map((msg, i) => (
+        {messages.map((msg, i) => (
           <div
-            key={i}
+            key={`${msg.created_at}-${i}`}
             className="message-enter flex animate-fade-in"
             style={{ justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}
           >
@@ -126,9 +118,20 @@ export default function ConversationPanel() {
                 borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
               }}
             >
-              <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-                {msg.content}
-              </p>
+              {msg.role === 'user' ? (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                  {msg.content}
+                </p>
+              ) : (
+                <div className="markdown-content text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
+              )}
               <button
                 onClick={() => copyMessage(msg.content, i)}
                 className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-xs px-2 py-1 rounded transition-all hover:scale-105"
@@ -150,9 +153,15 @@ export default function ConversationPanel() {
                 borderRadius: '16px 16px 16px 4px',
               }}
             >
-              <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-                {streamingMessage}<span className="typing-cursor" style={{ color: 'var(--accent)' }}></span>
-              </p>
+              <div className="markdown-content text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                >
+                  {streamingMessage}
+                </ReactMarkdown>
+                <span className="typing-cursor" style={{ color: 'var(--accent)' }}></span>
+              </div>
             </div>
           </div>
         )}
@@ -193,14 +202,21 @@ export default function ConversationPanel() {
             onKeyDown={handleKeyDown}
             placeholder="输入你的问题..."
             disabled={isLoading}
-            className="flex-1 px-3 py-2 rounded-xl resize-none transition-all focus:shadow-lg disabled:opacity-50"
+            className="flex-1 px-3 rounded-xl resize-none transition-all focus:shadow-lg disabled:opacity-50"
             style={{
               backgroundColor: 'var(--bg-tertiary)',
               color: 'var(--text-primary)',
               border: '1px solid var(--border)',
-              outline: 'none'
+              outline: 'none',
+              fontSize: '14px',
+              lineHeight: '20px',
+              paddingTop: '8px',
+              paddingBottom: '8px',
+              minHeight: '36px',
+              maxHeight: '120px',
+              overflow: 'auto'
             }}
-            rows={2}
+            rows={1}
           />
           <button
             onClick={handleSend}

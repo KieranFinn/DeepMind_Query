@@ -1,26 +1,31 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { KnowledgeRegion, Session, ConversationNode } from './types';
+import { KnowledgeRegion, Graph, Node } from './types';
 import * as api from './api';
 
 const MODELS = [
-  { id: 'abab6.5s-chat', name: 'MiniMax abab6.5s' },
-  { id: 'abab6-chat', name: 'MiniMax abab6' },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-  { id: 'gpt-4o', name: 'GPT-4o' },
+  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7' },
 ];
 
+const MAX_ERRORS = 3;
+
+interface ErrorItem {
+  id: string;
+  message: string;
+  timestamp: number;
+}
+
 interface AppState {
-  // Regions & Sessions
+  // Regions & Active State
   regions: KnowledgeRegion[];
   activeRegionId: string | null;
-  activeSessionId: string | null;
+  activeNodeId: string | null;  // Node = Session
 
   // UI State
-  activeTree: ConversationNode | null;
+  graph: Graph | null;  // Current region's graph
   streamingMessage: string;
   isLoading: boolean;
-  error: string | null;
+  errorQueue: ErrorItem[];
   selectedModel: string;
   abortController: AbortController | null;
   isHydrated: boolean;
@@ -29,33 +34,32 @@ interface AppState {
   loadRegions: () => Promise<void>;
   createRegion: (name: string, description?: string, color?: string) => Promise<void>;
   deleteRegion: (regionId: string) => Promise<void>;
+  updateRegion: (regionId: string, name: string) => Promise<void>;
   setActiveRegion: (regionId: string) => Promise<void>;
 
-  // Session actions
-  loadSessions: (regionId: string) => Promise<void>;
-  createSession: (regionId: string, title?: string) => Promise<void>;
-  setActiveSession: (sessionId: string) => Promise<void>;
-
-  // Tree actions
-  loadTree: () => Promise<void>;
+  // Node actions (Node = Session)
+  loadGraph: () => Promise<void>;
+  setActiveNode: (nodeId: string) => Promise<void>;
+  createNode: (title?: string, parentId?: string) => Promise<void>;
   sendUserMessage: (content: string) => Promise<void>;
-  createBranch: (parentNodeId: string, title?: string) => Promise<void>;
+  createChildNode: (parentId: string, title?: string) => Promise<void>;
   cancelStreaming: () => void;
 
   // Utils
   setModel: (model: string) => void;
-  clearError: () => void;
+  addError: (message: string) => void;
+  clearError: (id?: string) => void;
   getActiveRegion: () => KnowledgeRegion | null;
-  getActiveSession: () => Session | null;
+  getActiveNode: () => Node | null;
 }
 
 function findRegion(regions: KnowledgeRegion[], regionId: string): KnowledgeRegion | null {
   return regions.find(r => r.id === regionId) || null;
 }
 
-function findSession(region: KnowledgeRegion | null, sessionId: string): Session | null {
-  if (!region) return null;
-  return region.sessions.find(s => s.id === sessionId) || null;
+function findNode(graph: Graph | null, nodeId: string): Node | null {
+  if (!graph) return null;
+  return graph.nodes.find(n => n.id === nodeId) || null;
 }
 
 export const useStore = create<AppState>()(
@@ -63,11 +67,11 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       regions: [],
       activeRegionId: null,
-      activeSessionId: null,
-      activeTree: null,
+      activeNodeId: null,
+      graph: null,
       streamingMessage: '',
       isLoading: false,
-      error: null,
+      errorQueue: [],
       selectedModel: MODELS[0].id,
       abortController: null,
       isHydrated: false,
@@ -75,23 +79,31 @@ export const useStore = create<AppState>()(
       // ============ Region Actions ============
 
       loadRegions: async () => {
-        set({ isLoading: true, error: null });
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
           const regions = await api.getRegions();
           set({ regions, isLoading: false, isHydrated: true });
 
-          // Auto-select first region if none active
-          const { activeRegionId, activeSessionId } = get();
+          // Auto-select first region and load its graph if none active
+          const { activeRegionId } = get();
           if (!activeRegionId && regions.length > 0) {
-            set({ activeRegionId: regions[0].id });
+            const firstRegionId = regions[0].id;
+            set({ activeRegionId: firstRegionId });
+            // Also load the graph for this region
+            const graph = await api.getGraph(firstRegionId);
+            set({
+              graph,
+              activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null
+            });
           }
         } catch (e) {
-          set({ error: (e as Error).message, isLoading: false, isHydrated: true });
+          get().addError((e as Error).message);
+          set({ isLoading: false, isHydrated: true });
         }
       },
 
       createRegion: async (name, description, color) => {
-        set({ isLoading: true, error: null });
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
           const region = await api.createRegion(name, description, color);
           set(state => ({
@@ -99,15 +111,16 @@ export const useStore = create<AppState>()(
             activeRegionId: region.id,
             isLoading: false
           }));
-          // Create first session in new region
-          await get().createSession(region.id, '第一个会话');
+          // Load graph for new region
+          await get().loadGraph();
         } catch (e) {
-          set({ error: (e as Error).message, isLoading: false });
+          get().addError((e as Error).message);
+          set({ isLoading: false });
         }
       },
 
       deleteRegion: async (regionId) => {
-        set({ isLoading: true, error: null });
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
           await api.deleteRegion(regionId);
           set(state => {
@@ -118,94 +131,126 @@ export const useStore = create<AppState>()(
             return {
               regions: newRegions,
               activeRegionId: newActiveId,
-              activeSessionId: newActiveId !== regionId ? state.activeSessionId : null,
+              activeNodeId: newActiveId !== regionId ? state.activeNodeId : null,
+              graph: newActiveId !== regionId ? state.graph : null,
               isLoading: false
             };
           });
         } catch (e) {
-          set({ error: (e as Error).message, isLoading: false });
+          get().addError((e as Error).message);
+          set({ isLoading: false });
+        }
+      },
+
+      updateRegion: async (regionId, name) => {
+        try {
+          await api.updateRegion(regionId, name);
+          set(state => ({
+            regions: state.regions.map(r =>
+              r.id === regionId ? { ...r, name } : r
+            )
+          }));
+        } catch (e) {
+          get().addError((e as Error).message);
         }
       },
 
       setActiveRegion: async (regionId) => {
         try {
           await api.setActiveRegion(regionId);
-          set({ activeRegionId: regionId, activeSessionId: null, activeTree: null });
-
-          // Load sessions and auto-select first
-          const region = findRegion(get().regions, regionId);
-          if (region && region.sessions.length > 0) {
-            set({ activeSessionId: region.sessions[0].id });
-            await get().loadTree();
-          }
+          set({ activeRegionId: regionId, activeNodeId: null, graph: null });
+          await get().loadGraph();
         } catch (e) {
-          set({ error: (e as Error).message });
+          get().addError((e as Error).message);
         }
       },
 
-      // ============ Session Actions ============
+      // ============ Graph / Node Actions ============
 
-      loadSessions: async (regionId) => {
-        // Sessions are stored within regions, no separate load needed
-      },
-
-      createSession: async (regionId, title) => {
-        set({ isLoading: true, error: null });
-        try {
-          const session = await api.createSession(regionId, title);
-          set(state => ({
-            regions: state.regions.map(r =>
-              r.id === regionId
-                ? { ...r, sessions: [...r.sessions, session] }
-                : r
-            ),
-            activeSessionId: session.id,
-            isLoading: false
-          }));
-          // Load the tree for the new session
-          await get().loadTree();
-        } catch (e) {
-          set({ error: (e as Error).message, isLoading: false });
-        }
-      },
-
-      setActiveSession: async (sessionId) => {
+      loadGraph: async () => {
         const { activeRegionId } = get();
-        if (!activeRegionId) return;
-
-        set({ activeSessionId: sessionId });
-        await get().loadTree();
-      },
-
-      // ============ Tree Actions ============
-
-      loadTree: async () => {
-        const { activeRegionId, activeSessionId } = get();
-        if (!activeRegionId || !activeSessionId) {
-          set({ activeTree: null });
+        if (!activeRegionId) {
+          set({ graph: null, activeNodeId: null });
           return;
         }
 
-        set({ isLoading: true, error: null });
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
-          const tree = await api.getSessionTree(activeRegionId, activeSessionId);
-          set({ activeTree: tree, isLoading: false });
+          const graph = await api.getGraph(activeRegionId);
+          set({
+            graph,
+            isLoading: false,
+            // Auto-select first node if exists
+            activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null
+          });
         } catch (e) {
-          set({ error: (e as Error).message, isLoading: false });
+          get().addError((e as Error).message);
+          set({ isLoading: false });
         }
       },
 
+      setActiveNode: async (nodeId) => {
+        const { activeRegionId } = get();
+        if (!activeRegionId) return;
+        set({ activeNodeId: nodeId });
+      },
+
+      createNode: async (title, parentId) => {
+        const { activeRegionId } = get();
+        if (!activeRegionId) return;
+
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
+        try {
+          const result = await api.createNode(activeRegionId, title, parentId);
+          await get().loadGraph();
+          set({ activeNodeId: result.node.id });
+        } catch (e) {
+          get().addError((e as Error).message);
+          set({ isLoading: false });
+        }
+      },
+
+      createChildNode: async (parentId, title) => {
+        const { activeRegionId } = get();
+        if (!activeRegionId) return;
+
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
+        try {
+          const result = await api.createChildNode(activeRegionId, parentId, title);
+          await get().loadGraph();
+          set({ activeNodeId: result.node.id });
+        } catch (e) {
+          get().addError((e as Error).message);
+          set({ isLoading: false });
+        }
+      },
+
+      // ============ Message Actions ============
+
       sendUserMessage: async (content) => {
-        const { activeRegionId, activeSessionId, abortController, selectedModel } = get();
-        if (!activeRegionId || !activeSessionId) return;
+        const { activeRegionId, activeNodeId, abortController, selectedModel } = get();
+        if (!activeRegionId || !activeNodeId) return;
 
         if (abortController) abortController.abort();
 
+        // Optimistically add user message to local state immediately
+        set(state => {
+          if (!state.graph) return state;
+          const newGraph = { ...state.graph };
+          const nodeIndex = newGraph.nodes.findIndex(n => n.id === activeNodeId);
+          if (nodeIndex === -1) return state;
+          const updatedNode = { ...newGraph.nodes[nodeIndex] };
+          updatedNode.messages = [...updatedNode.messages, { role: 'user', content, created_at: new Date().toISOString() }];
+          newGraph.nodes = [...newGraph.nodes];
+          newGraph.nodes[nodeIndex] = updatedNode;
+          return { ...state, graph: newGraph };
+        });
+
         const controller = new AbortController();
-        set({ abortController: controller, isLoading: true, error: null, streamingMessage: '' });
+        set(state => ({ ...state, abortController: controller, isLoading: true, errorQueue: [], streamingMessage: '' }));
 
         try {
-          const response = await api.streamMessage(activeRegionId, activeSessionId, content, selectedModel);
+          const response = await api.streamMessage(activeRegionId, activeNodeId, content, selectedModel);
 
           if (!response.ok) {
             let errorMsg = `HTTP ${response.status}`;
@@ -263,29 +308,17 @@ export const useStore = create<AppState>()(
           }
 
           if (!controller.signal.aborted) {
-            await get().loadTree();
+            await get().loadGraph();
           }
         } catch (e) {
           if ((e as Error).name !== 'AbortError') {
-            set({ error: (e as Error).message, isLoading: false, streamingMessage: '' });
+            get().addError((e as Error).message);
+            set({ isLoading: false, streamingMessage: '', abortController: null });
           }
         } finally {
           if (!controller.signal.aborted) {
             set({ streamingMessage: '', abortController: null });
           }
-        }
-      },
-
-      createBranch: async (parentNodeId, title) => {
-        const { activeRegionId, activeSessionId } = get();
-        if (!activeRegionId || !activeSessionId) return;
-
-        set({ isLoading: true, error: null });
-        try {
-          await api.createBranch(activeRegionId, activeSessionId, parentNodeId, title);
-          await get().loadTree();
-        } catch (e) {
-          set({ error: (e as Error).message, isLoading: false });
         }
       },
 
@@ -299,24 +332,40 @@ export const useStore = create<AppState>()(
 
       setModel: (model) => set({ selectedModel: model }),
 
-      clearError: () => set({ error: null }),
+      addError: (message) => set(state => {
+        const newError: ErrorItem = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          message,
+          timestamp: Date.now(),
+        };
+        const newQueue = [...state.errorQueue, newError].slice(-MAX_ERRORS);
+        return { errorQueue: newQueue };
+      }),
+
+      clearError: (id) => set(state => {
+        if (!id) {
+          // Clear all errors
+          return { errorQueue: [] };
+        }
+        // Clear specific error
+        return { errorQueue: state.errorQueue.filter(e => e.id !== id) };
+      }),
 
       getActiveRegion: () => {
         const { regions, activeRegionId } = get();
         return findRegion(regions, activeRegionId || '');
       },
 
-      getActiveSession: () => {
-        const region = get().getActiveRegion();
-        const { activeSessionId } = get();
-        return findSession(region, activeSessionId || '');
+      getActiveNode: () => {
+        const { graph, activeNodeId } = get();
+        return findNode(graph, activeNodeId || '');
       },
     }),
     {
       name: 'deepmind-query-storage',
       partialize: (state) => ({
         activeRegionId: state.activeRegionId,
-        activeSessionId: state.activeSessionId,
+        activeNodeId: state.activeNodeId,
         selectedModel: state.selectedModel,
       }),
       onRehydrateStorage: () => (state) => {

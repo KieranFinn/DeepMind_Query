@@ -1,4 +1,4 @@
-import { KnowledgeRegion, Session, ConversationNode } from './types';
+import { KnowledgeRegion, Graph, Node } from './types';
 
 const API_BASE = '/api';
 
@@ -24,64 +24,68 @@ export async function deleteRegion(regionId: string): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete region');
 }
 
+export async function updateRegion(regionId: string, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}?name=${encodeURIComponent(name)}`, { method: 'PATCH' });
+  if (!res.ok) throw new Error('Failed to update region');
+}
+
 export async function setActiveRegion(regionId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/regions/${regionId}/active`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to set active region');
 }
 
-// Sessions
-export async function getSessions(regionId: string): Promise<Session[]> {
-  const res = await fetch(`${API_BASE}/regions/${regionId}/sessions`);
-  if (!res.ok) throw new Error('Failed to get sessions');
+// Graph / Nodes
+export async function getGraph(regionId: string): Promise<Graph> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph`);
+  if (!res.ok) throw new Error('Failed to get graph');
   return res.json();
 }
 
-export async function createSession(regionId: string, title?: string): Promise<Session> {
-  const res = await fetch(`${API_BASE}/regions/${regionId}/sessions`, {
+export async function getNodes(regionId: string): Promise<Node[]> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes`);
+  if (!res.ok) throw new Error('Failed to get nodes');
+  return res.json();
+}
+
+export async function createNode(regionId: string, title?: string, parentId?: string): Promise<{ node: Node; success: boolean }> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, parent_id: parentId }),
   });
-  if (!res.ok) throw new Error('Failed to create session');
+  if (!res.ok) throw new Error('Failed to create node');
   return res.json();
 }
 
-export async function getSession(regionId: string, sessionId: string): Promise<Session> {
-  const res = await fetch(`${API_BASE}/regions/${regionId}/sessions/${sessionId}`);
-  if (!res.ok) throw new Error('Failed to get session');
+export async function getNode(regionId: string, nodeId: string): Promise<Node> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}`);
+  if (!res.ok) throw new Error('Failed to get node');
   return res.json();
 }
 
-// Conversation Tree
-export async function getSessionTree(regionId: string, sessionId: string): Promise<ConversationNode> {
-  const res = await fetch(`${API_BASE}/regions/${regionId}/sessions/${sessionId}/tree`);
-  if (!res.ok) throw new Error('Failed to get session tree');
+export async function deleteNode(regionId: string, nodeId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete node');
+}
+
+export async function createChildNode(regionId: string, nodeId: string, title?: string): Promise<{ node: Node; success: boolean }> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}/children?title=${encodeURIComponent(title || '')}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to create child node');
   return res.json();
 }
 
+// Messages
 export async function streamMessage(
   regionId: string,
-  sessionId: string,
+  nodeId: string,
   content: string,
-  model: string = 'gpt-4o-mini'
+  model: string = 'MiniMax-M2.7'
 ): Promise<Response> {
-  return fetch(`${API_BASE}/regions/${regionId}/sessions/${sessionId}/message`, {
+  return fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, model }),
   });
-}
-
-export async function createBranch(
-  regionId: string,
-  sessionId: string,
-  parentNodeId: string,
-  title?: string
-): Promise<ConversationNode> {
-  const res = await fetch(
-    `${API_BASE}/regions/${regionId}/sessions/${sessionId}/branch?parent_node_id=${parentNodeId}&title=${encodeURIComponent(title || '')}`,
-    { method: 'POST' }
-  );
-  if (!res.ok) throw new Error('Failed to create branch');
-  return res.json();
 }

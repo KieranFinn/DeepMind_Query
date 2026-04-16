@@ -1,14 +1,14 @@
 import uuid
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 from store import store
 from models import (
     CreateRegionRequest,
-    CreateSessionRequest,
+    CreateNodeRequest,
     SendMessageRequest,
     KnowledgeRegion,
-    Session,
+    Graph,
 )
 from llm import stream_chat
 
@@ -34,6 +34,8 @@ async def create_region(req: CreateRegionRequest):
             color=req.color or "#d4a574",
             tags=req.tags or []
         )
+        # Create first node (first session) automatically
+        store.create_node(region.id, "第一个会话")
         return region
 
 
@@ -41,7 +43,7 @@ async def create_region(req: CreateRegionRequest):
 async def get_region(region_id: uuid.UUID):
     """Get a specific region"""
     async with await store.lock():
-        region = store.get_region(region_id)
+        region = store.get_region(str(region_id))
         if not region:
             raise HTTPException(status_code=404, detail="Region not found")
         return region
@@ -51,7 +53,18 @@ async def get_region(region_id: uuid.UUID):
 async def delete_region(region_id: uuid.UUID):
     """Delete a region"""
     async with await store.lock():
-        if not store.delete_region(region_id):
+        if not store.delete_region(str(region_id)):
+            raise HTTPException(status_code=404, detail="Region not found")
+        return {"success": True}
+
+
+@router.patch("/regions/{region_id}")
+async def update_region(region_id: uuid.UUID, name: str = Query(..., description="New name for the region")):
+    """Update region name"""
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    async with await store.lock():
+        if not store.update_region_name(str(region_id), name.strip()):
             raise HTTPException(status_code=404, detail="Region not found")
         return {"success": True}
 
@@ -60,72 +73,83 @@ async def delete_region(region_id: uuid.UUID):
 async def set_active_region(region_id: uuid.UUID):
     """Set active region"""
     async with await store.lock():
-        if not store.set_active_region(region_id):
+        if not store.set_active_region(str(region_id)):
             raise HTTPException(status_code=404, detail="Region not found")
         return {"success": True}
 
 
-# ============ Sessions ============
+# ============ Graph / Nodes ============
 
-@router.get("/regions/{region_id}/sessions", response_model=list[Session])
-async def get_sessions(region_id: uuid.UUID):
-    """Get all sessions in a region"""
+@router.get("/regions/{region_id}/graph", response_model=Graph)
+async def get_graph(region_id: uuid.UUID):
+    """Get the graph for a region"""
     async with await store.lock():
-        region = store.get_region(region_id)
-        if not region:
+        graph = store.get_graph(str(region_id))
+        if not graph:
             raise HTTPException(status_code=404, detail="Region not found")
-        return region.sessions
+        return graph
 
 
-@router.post("/regions/{region_id}/sessions", response_model=Session)
-async def create_session(region_id: uuid.UUID, req: CreateSessionRequest):
-    """Create a new session in a region"""
+@router.get("/regions/{region_id}/graph/nodes", response_model=list)
+async def get_nodes(region_id: uuid.UUID):
+    """Get all nodes in a region's graph"""
     async with await store.lock():
-        session = store.create_session(region_id, req.title)
-        if not session:
+        graph = store.get_graph(str(region_id))
+        if not graph:
             raise HTTPException(status_code=404, detail="Region not found")
-        return session
+        return graph.nodes
 
 
-@router.get("/regions/{region_id}/sessions/{session_id}", response_model=Session)
-async def get_session(region_id: uuid.UUID, session_id: uuid.UUID):
-    """Get a specific session"""
+@router.post("/regions/{region_id}/graph/nodes", response_model=dict)
+async def create_node(region_id: uuid.UUID, req: CreateNodeRequest):
+    """Create a new node (session) in the graph"""
     async with await store.lock():
-        session = store.get_session(region_id, session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return session
+        node = store.create_node(str(region_id), req.title, req.parent_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Region not found")
+        return {"node": node, "success": True}
 
 
-# ============ Conversation Tree ============
-
-@router.get("/regions/{region_id}/sessions/{session_id}/tree")
-async def get_session_tree(region_id: uuid.UUID, session_id: uuid.UUID):
-    """Get the conversation tree for a session"""
+@router.get("/regions/{region_id}/graph/nodes/{node_id}")
+async def get_node(region_id: uuid.UUID, node_id: uuid.UUID):
+    """Get a specific node"""
     async with await store.lock():
-        tree = store.get_session_tree(region_id, session_id)
-        if not tree:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return tree
+        node = store.get_node(str(region_id), str(node_id))
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        return node
 
 
-@router.post("/regions/{region_id}/sessions/{session_id}/message")
-async def send_message(region_id: uuid.UUID, session_id: uuid.UUID, req: SendMessageRequest):
-    """Send a message and stream the assistant response"""
+@router.delete("/regions/{region_id}/graph/nodes/{node_id}")
+async def delete_node(region_id: uuid.UUID, node_id: uuid.UUID):
+    """Delete a node"""
     async with await store.lock():
-        session = store.get_session(region_id, session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+        if not store.delete_node(str(region_id), str(node_id)):
+            raise HTTPException(status_code=404, detail="Node not found")
+        return {"success": True}
 
+
+# ============ Messages ============
+
+@router.post("/regions/{region_id}/graph/nodes/{node_id}/message")
+async def send_message(region_id: uuid.UUID, node_id: uuid.UUID, req: SendMessageRequest):
+    """Send a message to a node and stream the assistant response"""
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
-    # Add user message
-    store.add_message_to_session(region_id, session_id, "user", req.content.strip())
+    async with await store.lock():
+        node = store.get_node(str(region_id), str(node_id))
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
 
-    # Build messages for LLM
-    tree = store.get_session_tree(region_id, session_id)
-    messages = [{"role": msg.role, "content": msg.content} for msg in tree.messages]
+        # Build context from node's messages
+        messages = []
+        for msg in node.messages:
+            messages.append({"role": msg.role, "content": msg.content})
+
+        # Add user message
+        store.add_message_to_node(str(region_id), str(node_id), "user", req.content.strip())
+        messages.append({"role": "user", "content": req.content.strip()})
 
     async def generate():
         full_response = ""
@@ -135,39 +159,37 @@ async def send_message(region_id: uuid.UUID, session_id: uuid.UUID, req: SendMes
                 yield {"event": "message", "data": json.dumps({"content": chunk})}
 
             if full_response:
-                store.add_message_to_session(region_id, session_id, "assistant", full_response)
+                async with await store.lock():
+                    store.add_message_to_node(str(region_id), str(node_id), "assistant", full_response)
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"error": str(e)})}
 
     return EventSourceResponse(generate())
 
 
-@router.post("/regions/{region_id}/sessions/{session_id}/branch")
-async def create_branch(
-    region_id: uuid.UUID,
-    session_id: uuid.UUID,
-    parent_node_id: str,
-    title: str = None
-):
-    """Create a branch from a node in the session's conversation tree"""
+@router.post("/regions/{region_id}/graph/nodes/{node_id}/children", response_model=dict)
+async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str = Query(None, description="Title for the new child node")):
+    """Create a child node (branch) - creates edge from parent to child"""
     async with await store.lock():
-        try:
-            parent_uuid = uuid.UUID(parent_node_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid node ID")
+        parent = store.get_node(str(region_id), str(node_id))
+        if not parent:
+            raise HTTPException(status_code=404, detail="Node not found")
 
-        node = store.create_branch_in_session(region_id, session_id, parent_uuid, title)
-        if not node:
-            raise HTTPException(status_code=404, detail="Parent node not found")
-        return node
+        child = store.create_node(str(region_id), title, parent_id=str(node_id))
+        if not child:
+            raise HTTPException(status_code=404, detail="Failed to create child node")
+
+        return {"node": child, "success": True}
 
 
 # ============ Health Check ============
 
 @router.get("/")
 async def root():
+    async with await store.lock():
+        regions_count = len(store.regions)
     return {
         "message": "DeepMind_Query API",
         "status": "running",
-        "regions_count": len(store.regions)
+        "regions_count": regions_count
     }

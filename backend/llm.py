@@ -1,54 +1,45 @@
 import os
 import httpx
 import json
+import logging
 from typing import AsyncGenerator
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
-# MiniMax
-MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
-MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.chat/v1")
-
-# OpenAI (fallback)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-PROVIDER = os.getenv("PROVIDER", "minimax").lower()
-
-
-def get_provider_config():
-    if PROVIDER == "openai":
-        return {"api_key": OPENAI_API_KEY, "base_url": OPENAI_BASE_URL}
-    else:  # minimax
-        return {"api_key": MINIMAX_API_KEY, "base_url": MINIMAX_BASE_URL}
+# MiniMax Anthropic API (compatible with Anthropic SDK format)
+MINIMAX_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+MINIMAX_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
 
 
 async def stream_chat(model: str, messages: list[dict], api_key: str = None) -> AsyncGenerator[str, None]:
-    """Stream chat completion from OpenAI-compatible API"""
-    config = get_provider_config()
-    key = api_key or config["api_key"]
-    base_url = config["base_url"]
+    """Stream chat completion from MiniMax Anthropic API"""
+    key = api_key or MINIMAX_API_KEY
 
     if not key:
-        yield "[Error] No API key configured. Set MINIMAX_API_KEY or OPENAI_API_KEY in .env"
+        yield "[Error] No API key configured. Set ANTHROPIC_API_KEY in .env"
         return
 
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
     }
 
+    endpoint = f"{MINIMAX_BASE_URL}/v1/messages"
     payload = {
         "model": model,
         "messages": messages,
         "stream": True,
+        "max_tokens": 4096,
     }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream(
             "POST",
-            f"{base_url}/chat/completions",
+            endpoint,
             headers=headers,
             json=payload,
         ) as response:
@@ -64,19 +55,21 @@ async def stream_chat(model: str, messages: list[dict], api_key: str = None) -> 
                         break
                     try:
                         chunk = json.loads(data)
-                        choices = chunk.get("choices", [{}])
-                        if PROVIDER == "minimax":
-                            # MiniMax format: choices[0].delta.content
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                        else:
-                            # OpenAI format: choices[0].delta.content
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except Exception:
+                        # Anthropic streaming format
+                        type_ = chunk.get("type", "")
+                        if type_ == "content_block_delta":
+                            delta = chunk.get("delta", {})
+                            # Skip thinking blocks, only output text
+                            if delta.get("type") == "text_delta":
+                                yield delta.get("text", "")
+                        elif type_ == "message_delta":
+                            # Final message with usage info - ignore
+                            pass
+                    except json.JSONDecodeError:
+                        # Malformed JSON in stream - skip silently (normal for partial chunks)
                         pass
+                    except Exception as e:
+                        logger.warning(f"Stream processing error: {e}")
 
 
 async def chat(model: str, messages: list[dict], api_key: str = None) -> str:
