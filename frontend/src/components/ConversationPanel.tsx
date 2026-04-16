@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
-import { useConversationStore } from '../store';
+import { useConversationStore, MODELS } from '../store';
 
 interface Props {
   onBranch?: () => void;
 }
 
 export default function ConversationPanel({ onBranch }: Props) {
-  const { tree, activeNodeId, streamingMessage, isLoading, sendUserMessage, createChildBranch } = useConversationStore();
+  const { tree, activeNodeId, streamingMessage, isLoading, selectedModel, setModel, sendUserMessage, createChildBranch } = useConversationStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -59,9 +59,20 @@ export default function ConversationPanel({ onBranch }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-        <h2 className="font-semibold text-gray-800">{activeNode.title}</h2>
-        <p className="text-xs text-gray-500">{activeNode.messages.length} 条消息</p>
+      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold text-gray-800">{activeNode.title}</h2>
+          <p className="text-xs text-gray-500">{activeNode.messages.length} 条消息</p>
+        </div>
+        <select
+          value={selectedModel}
+          onChange={(e) => setModel(e.target.value)}
+          className="text-xs px-2 py-1 border border-gray-300 rounded-md bg-white"
+        >
+          {MODELS.map((m) => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </select>
       </div>
 
       {/* Messages */}

@@ -1,6 +1,13 @@
 import { create } from 'zustand';
-import { ConversationNode, Message } from './types';
+import { ConversationNode } from './types';
 import { getTree, createConversation, createBranch, streamMessage } from './api';
+
+const MODELS = [
+  { id: 'abab6.5s-chat', name: 'MiniMax abab6.5s' },
+  { id: 'abab6-chat', name: 'MiniMax abab6' },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
+  { id: 'gpt-4o', name: 'GPT-4o' },
+];
 
 interface ConversationStore {
   tree: ConversationNode | null;
@@ -8,10 +15,12 @@ interface ConversationStore {
   streamingMessage: string;
   isLoading: boolean;
   error: string | null;
+  selectedModel: string;
 
   // Actions
   loadTree: () => Promise<void>;
   setActiveNode: (id: string) => void;
+  setModel: (model: string) => void;
   createRootConversation: (title?: string) => Promise<void>;
   createChildBranch: (parentId: string, title?: string) => Promise<void>;
   sendUserMessage: (nodeId: string, content: string) => Promise<void>;
@@ -24,6 +33,7 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
   streamingMessage: '',
   isLoading: false,
   error: null,
+  selectedModel: MODELS[0].id,
 
   loadTree: async () => {
     set({ isLoading: true, error: null });
@@ -36,6 +46,8 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
   },
 
   setActiveNode: (id) => set({ activeNodeId: id }),
+
+  setModel: (model) => set({ selectedModel: model }),
 
   createRootConversation: async (title) => {
     set({ isLoading: true, error: null });
@@ -51,7 +63,6 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const child = await createBranch(parentId, title);
-      // Reload tree to get updated structure
       await get().loadTree();
       set({ activeNodeId: child.id, isLoading: false });
     } catch (e) {
@@ -62,7 +73,8 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
   sendUserMessage: async (nodeId, content) => {
     set({ isLoading: true, error: null, streamingMessage: '' });
     try {
-      const response = await streamMessage(nodeId, content);
+      const model = get().selectedModel;
+      const response = await streamMessage(nodeId, content, model);
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
 
@@ -75,7 +87,6 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
-        // SSE format: data: {...}\n\n or data: [DONE]\n\n
         const lines = chunk.split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
@@ -83,21 +94,19 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
             if (data === '[DONE]') continue;
             try {
               const parsed = JSON.parse(data);
-              // Accumulate content from stream
-              if (parsed.trim()) {
-                fullContent += parsed;
+              // Handle delta format from both MiniMax and OpenAI
+              const delta = parsed.choices?.[0]?.delta?.content || '';
+              if (delta) {
+                fullContent += delta;
                 set({ streamingMessage: fullContent });
               }
             } catch {
-              // Plain text chunk
-              fullContent += data;
-              set({ streamingMessage: fullContent });
+              // Already JSON parsed, skip
             }
           }
         }
       }
 
-      // Reload tree to get updated messages
       await get().loadTree();
       set({ streamingMessage: '', isLoading: false });
     } catch (e) {
@@ -107,3 +116,5 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+export { MODELS };
