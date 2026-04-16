@@ -120,6 +120,7 @@ export const useStore = create<AppState>()(
       },
 
       deleteRegion: async (regionId) => {
+        const { activeRegionId } = get();
         set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
           await api.deleteRegion(regionId);
@@ -136,6 +137,10 @@ export const useStore = create<AppState>()(
               isLoading: false
             };
           });
+          // Reload graph if the deleted region was the active one
+          if (activeRegionId === regionId) {
+            await get().loadGraph();
+          }
         } catch (e) {
           get().addError((e as Error).message);
           set({ isLoading: false });
@@ -177,12 +182,16 @@ export const useStore = create<AppState>()(
         set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
           const graph = await api.getGraph(activeRegionId);
-          set({
+          set(state => ({
             graph,
             isLoading: false,
             // Auto-select first node if exists
-            activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null
-          });
+            activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null,
+            // Sync graph into regions array so activeRegion.graph stays consistent
+            regions: state.regions.map(r =>
+              r.id === activeRegionId ? { ...r, graph } : r
+            )
+          }));
         } catch (e) {
           get().addError((e as Error).message);
           set({ isLoading: false });

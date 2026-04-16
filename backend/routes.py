@@ -34,8 +34,7 @@ async def create_region(req: CreateRegionRequest):
             color=req.color or "#d4a574",
             tags=req.tags or []
         )
-        # Create first node (first session) automatically
-        store.create_node(region.id, "第一个会话")
+        # First node is created automatically inside create_region
         return region
 
 
