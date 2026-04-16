@@ -7,3 +7,134 @@ html, body, #root {
   margin: 0;
   padding: 0;
 }
+
+/* Dark warm theme - Claude cream aesthetic adapted for dark mode */
+:root {
+  --bg-primary: #1a1814;      /* Warm dark brown-black */
+  --bg-secondary: #242019;     /* Slightly lighter warm dark */
+  --bg-tertiary: #2e2820;     /* Card backgrounds */
+  --bg-hover: #3a3228;         /* Hover states */
+  --border: #3d352a;           /* Subtle warm borders */
+  --border-light: #4a4035;     /* Lighter borders */
+  --text-primary: #e8e4dc;     /* Warm off-white */
+  --text-secondary: #a8a299;    /* Muted warm gray */
+  --text-muted: #6b6560;       /* Very muted */
+  --accent: #d4a574;            /* Warm cream accent */
+  --accent-hover: #e0b88a;     /* Accent hover */
+  --user-bubble: #4a3f32;      /* User message warm brown */
+  --assistant-bubble: #2d2620; /* Assistant message darker */
+  --active-path: #5c4a32;      /* Active path highlight */
+  --success: #7d9a6a;           /* Warm green */
+  --error: #c47070;             /* Warm red */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Smooth scroll */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar for dark warm theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Focus states */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* React Flow dark theme overrides */
+.react-flow__background {
+  background-color: var(--bg-primary) !important;
+}
+
+.react-flow__controls {
+  background: var(--bg-tertiary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: var(--bg-tertiary) !important;
+  border-bottom: 1px solid var(--border) !important;
+  fill: var(--text-secondary) !important;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--bg-hover) !important;
+}
+
+.react-flow__minimap {
+  background: var(--bg-secondary) !important;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* Animation utilities */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.25s ease-out forwards;
+}
+
+.animate-pulse-gentle {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Message animations */
+.message-enter {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* Button hover transitions */
+.transition-smooth {
+  transition: all 0.15s ease-out;
+}
+
+/* Typing indicator */
+.typing-cursor::after {
+  content: '▊';
+  animation: pulse 1s ease-in-out infinite;
+}

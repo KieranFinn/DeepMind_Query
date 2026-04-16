@@ -5,23 +5,28 @@ import ConversationPanel from './components/ConversationPanel';
 import { useConversationStore } from './store';
 
 export default function App() {
-  const { loadTree, setActiveNode, error, clearError } = useConversationStore();
+  const { loadTree, setActiveNode, error, clearError, isHydrated } = useConversationStore();
 
   useEffect(() => {
-    loadTree();
-  }, [loadTree]);
+    if (isHydrated) {
+      loadTree();
+    }
+  }, [isHydrated, loadTree]);
 
   const handleNodeClick = (nodeId: string) => {
     setActiveNode(nodeId);
   };
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
+    <div className="h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
       <Toolbar />
 
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 flex justify-between items-center">
-          <span>{error}</span>
+        <div
+          className="flex justify-between items-center px-4 py-2 animate-fade-in"
+          style={{ backgroundColor: 'var(--error)', color: '#fff' }}
+        >
+          <span className="text-sm">{error}</span>
           <button onClick={clearError} className="text-sm hover:underline">
             关闭
           </button>
@@ -30,12 +35,12 @@ export default function App() {
 
       <div className="flex-1 flex overflow-hidden">
         {/* Graph Panel */}
-        <div className="flex-1 border-r border-gray-300">
+        <div className="flex-1" style={{ borderRight: '1px solid var(--border)' }}>
           <KnowledgeGraph onNodeClick={handleNodeClick} />
         </div>
 
         {/* Conversation Panel */}
-        <div className="w-[400px] bg-white">
+        <div className="w-[420px] flex-shrink-0" style={{ backgroundColor: 'var(--bg-secondary)' }}>
           <ConversationPanel />
         </div>
       </div>

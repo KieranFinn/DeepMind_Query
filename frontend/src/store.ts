@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { ConversationNode } from './types';
 import { getTree, createConversation, createBranch, streamMessage } from './api';
 
@@ -17,6 +18,7 @@ interface ConversationStore {
   error: string | null;
   selectedModel: string;
   abortController: AbortController | null;
+  isHydrated: boolean;  // Track localStorage hydration
 
   // Actions
   loadTree: () => Promise<void>;
@@ -26,164 +28,240 @@ interface ConversationStore {
   createChildBranch: (parentId: string, title?: string) => Promise<void>;
   sendUserMessage: (nodeId: string, content: string) => Promise<void>;
   cancelStreaming: () => void;
+  renameNode: (nodeId: string, title: string) => void;
+  deleteNode: (nodeId: string) => Promise<void>;
   clearError: () => void;
 }
 
-export const useConversationStore = create<ConversationStore>((set, get) => ({
-  tree: null,
-  activeNodeId: null,
-  streamingMessage: '',
-  isLoading: false,
-  error: null,
-  selectedModel: MODELS[0].id,
-  abortController: null,
+function findNodeById(node: ConversationNode | null, id: string): ConversationNode | null {
+  if (!node) return null;
+  if (node.id === id) return node;
+  for (const child of node.children) {
+    const found = findNodeById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
 
-  loadTree: async () => {
-    // Cancel any ongoing streaming before reloading
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
-    }
+function renameNodeInTree(node: ConversationNode, nodeId: string, newTitle: string): boolean {
+  if (node.id === nodeId) {
+    node.title = newTitle;
+    return true;
+  }
+  for (const child of node.children) {
+    if (renameNodeInTree(child, nodeId, newTitle)) return true;
+  }
+  return false;
+}
 
-    set({ isLoading: true, error: null });
-    try {
-      const { root } = await getTree();
-      set({ tree: root, isLoading: false });
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        set({ error: (e as Error).message, isLoading: false });
-      }
-    }
-  },
+function deleteNodeFromTree(node: ConversationNode, nodeId: string): ConversationNode | null {
+  if (node.id === nodeId) {
+    return null; // Delete this node (return its children to promote them)
+  }
+  return {
+    ...node,
+    children: node.children
+      .map(child => deleteNodeFromTree(child, nodeId))
+      .filter((c): c is ConversationNode => c !== null)
+  };
+}
 
-  setActiveNode: (id) => set({ activeNodeId: id }),
+export const useConversationStore = create<ConversationStore>()(
+  persist(
+    (set, get) => ({
+      tree: null,
+      activeNodeId: null,
+      streamingMessage: '',
+      isLoading: false,
+      error: null,
+      selectedModel: MODELS[0].id,
+      abortController: null,
+      isHydrated: false,
 
-  setModel: (model) => set({ selectedModel: model }),
-
-  createRootConversation: async (title) => {
-    set({ isLoading: true, error: null });
-    try {
-      const node = await createConversation(title);
-      set({ tree: node, activeNodeId: node.id, isLoading: false });
-    } catch (e) {
-      set({ error: (e as Error).message, isLoading: false });
-    }
-  },
-
-  createChildBranch: async (parentId, title) => {
-    set({ isLoading: true, error: null });
-    try {
-      const child = await createBranch(parentId, title);
-      await get().loadTree();
-      set({ activeNodeId: child.id, isLoading: false });
-    } catch (e) {
-      set({ error: (e as Error).message, isLoading: false });
-    }
-  },
-
-  sendUserMessage: async (nodeId, content) => {
-    // Cancel any ongoing stream first
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
-    }
-
-    const controller = new AbortController();
-    set({ abortController: controller, isLoading: true, error: null, streamingMessage: '' });
-
-    try {
-      const model = get().selectedModel;
-      const response = await streamMessage(nodeId, content, model);
-
-      if (!response.ok) {
-        let errorMsg = `HTTP ${response.status}`;
-        try {
-          const errData = await response.json();
-          errorMsg = errData.detail || errorMsg;
-        } catch {}
-        throw new Error(errorMsg);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let fullContent = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        // Check if aborted
-        if (controller.signal.aborted) {
-          break;
+      loadTree: async () => {
+        const { abortController } = get();
+        if (abortController) {
+          abortController.abort();
         }
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            if (data === '[DONE]') continue;
+        set({ isLoading: true, error: null });
+        try {
+          const { root } = await getTree();
+          set({ tree: root, isLoading: false, isHydrated: true });
+        } catch (e) {
+          if ((e as Error).name !== 'AbortError') {
+            set({ error: (e as Error).message, isLoading: false, isHydrated: true });
+          }
+        }
+      },
+
+      setActiveNode: (id) => set({ activeNodeId: id }),
+
+      setModel: (model) => set({ selectedModel: model }),
+
+      createRootConversation: async (title) => {
+        set({ isLoading: true, error: null });
+        try {
+          const node = await createConversation(title);
+          set({ tree: node, activeNodeId: node.id, isLoading: false });
+        } catch (e) {
+          set({ error: (e as Error).message, isLoading: false });
+        }
+      },
+
+      createChildBranch: async (parentId, title) => {
+        set({ isLoading: true, error: null });
+        try {
+          const child = await createBranch(parentId, title);
+          await get().loadTree();
+          set({ activeNodeId: child.id, isLoading: false });
+        } catch (e) {
+          set({ error: (e as Error).message, isLoading: false });
+        }
+      },
+
+      sendUserMessage: async (nodeId, content) => {
+        const { abortController } = get();
+        if (abortController) {
+          abortController.abort();
+        }
+
+        const controller = new AbortController();
+        set({ abortController: controller, isLoading: true, error: null, streamingMessage: '' });
+
+        try {
+          const model = get().selectedModel;
+          const response = await streamMessage(nodeId, content, model);
+
+          if (!response.ok) {
+            let errorMsg = `HTTP ${response.status}`;
             try {
-              // Parse SSE event format: {"event": "message", "data": "{\"content\": \"...\"}"}
-              const sseEvent = JSON.parse(data);
-              if (sseEvent.event === 'error') {
-                const errData = JSON.parse(sseEvent.data);
-                throw new Error(errData.error || 'Stream error');
-              }
-              if (sseEvent.data) {
-                const inner = JSON.parse(sseEvent.data);
-                const text = inner.content || '';
-                if (text) {
-                  fullContent += text;
-                  set({ streamingMessage: fullContent });
+              const errData = await response.json();
+              errorMsg = errData.detail || errorMsg;
+            } catch {}
+            throw new Error(errorMsg);
+          }
+
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('No response body');
+
+          const decoder = new TextDecoder();
+          let fullContent = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            if (controller.signal.aborted) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') continue;
+                try {
+                  const sseEvent = JSON.parse(data);
+                  if (sseEvent.event === 'error') {
+                    const errData = JSON.parse(sseEvent.data);
+                    throw new Error(errData.error || 'Stream error');
+                  }
+                  if (sseEvent.data) {
+                    const inner = JSON.parse(sseEvent.data);
+                    const text = inner.content || '';
+                    if (text) {
+                      fullContent += text;
+                      set({ streamingMessage: fullContent });
+                    }
+                  }
+                } catch (parseErr) {
+                  if ((parseErr as Error).message.startsWith('Stream error')) {
+                    throw parseErr;
+                  }
+                  try {
+                    const parsed = JSON.parse(data);
+                    const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
+                    if (text) {
+                      fullContent += text;
+                      set({ streamingMessage: fullContent });
+                    }
+                  } catch {
+                    // Not JSON, skip
+                  }
                 }
-              }
-            } catch (parseErr) {
-              // Try plain JSON fallback
-              if ((parseErr as Error).message.startsWith('Stream error')) {
-                throw parseErr;
-              }
-              try {
-                const parsed = JSON.parse(data);
-                const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
-                if (text) {
-                  fullContent += text;
-                  set({ streamingMessage: fullContent });
-                }
-              } catch {
-                // Not JSON, skip
               }
             }
           }
+
+          if (!controller.signal.aborted) {
+            await get().loadTree();
+          }
+        } catch (e) {
+          if ((e as Error).name !== 'AbortError') {
+            set({ error: (e as Error).message, isLoading: false, streamingMessage: '' });
+          }
+        } finally {
+          if (!controller.signal.aborted) {
+            set({ streamingMessage: '', abortController: null });
+          }
         }
-      }
+      },
 
-      // Only reload if not aborted
-      if (!controller.signal.aborted) {
-        await get().loadTree();
-      }
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        set({ error: (e as Error).message, isLoading: false, streamingMessage: '' });
-      }
-    } finally {
-      if (!controller.signal.aborted) {
-        set({ streamingMessage: '', abortController: null });
-      }
+      cancelStreaming: () => {
+        const { abortController } = get();
+        if (abortController) {
+          abortController.abort();
+        }
+        set({ isLoading: false, streamingMessage: '', abortController: null });
+      },
+
+      renameNode: (nodeId, title) => {
+        const { tree } = get();
+        if (!tree) return;
+        renameNodeInTree(tree, nodeId, title);
+        set({ tree: { ...tree } }); // Trigger re-render
+      },
+
+      deleteNode: async (nodeId) => {
+        const { tree, activeNodeId } = get();
+        if (!tree) return;
+
+        // Can't delete root
+        if (tree.id === nodeId) {
+          set({ error: '不能删除根节点' });
+          return;
+        }
+
+        const newTree = deleteNodeFromTree(tree, nodeId);
+        set({ tree: newTree });
+
+        // If deleted node was active, switch to parent or new root
+        if (activeNodeId === nodeId) {
+          const deletedNode = findNodeById(tree, nodeId);
+          if (deletedNode?.parent_id) {
+            set({ activeNodeId: deletedNode.parent_id });
+          } else if (newTree) {
+            set({ activeNodeId: newTree.id });
+          } else {
+            set({ activeNodeId: null });
+          }
+        }
+      },
+
+      clearError: () => set({ error: null }),
+    }),
+    {
+      name: 'deepmind-query-storage',
+      partialize: (state) => ({
+        tree: state.tree,
+        activeNodeId: state.activeNodeId,
+        selectedModel: state.selectedModel,
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (state) state.isHydrated = true;
+      },
     }
-  },
-
-  cancelStreaming: () => {
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
-    }
-    set({ isLoading: false, streamingMessage: '', abortController: null });
-  },
-
-  clearError: () => set({ error: null }),
-}));
+  )
+);
 
 export { MODELS };

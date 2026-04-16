@@ -10,21 +10,56 @@ interface NodeData {
 function NodeCard({ data, selected }: NodeProps<NodeData>) {
   const { label, isActive, isOnPath } = data;
 
+  const getBgColor = () => {
+    if (isActive) return 'var(--active-path)';
+    if (isOnPath) return 'var(--bg-tertiary)';
+    return 'var(--bg-secondary)';
+  };
+
+  const getBorderColor = () => {
+    if (selected) return 'var(--accent)';
+    if (isActive) return 'var(--accent)';
+    if (isOnPath) return 'var(--border-light)';
+    return 'var(--border)';
+  };
+
   return (
     <div
-      className={`
-        px-4 py-2 rounded-lg border-2 min-w-[120px] text-center
-        transition-all duration-200
-        ${selected ? 'border-blue-500 shadow-lg' : 'border-gray-300'}
-        ${isActive ? 'bg-blue-50 border-blue-400' : isOnPath ? 'bg-green-50 border-green-400' : 'bg-white'}
-      `}
+      className="px-4 py-3 rounded-lg min-w-[140px] text-center transition-all duration-200 hover:scale-105"
+      style={{
+        backgroundColor: getBgColor(),
+        border: `2px solid ${getBorderColor()}`,
+        boxShadow: selected || isActive ? '0 4px 20px rgba(212, 165, 116, 0.15)' : '0 2px 8px rgba(0,0,0,0.2)',
+      }}
     >
-      <Handle type="target" position={Position.Top} className="!bg-gray-400 !w-2 !h-2" />
-      <div className="text-sm font-medium text-gray-800 truncate max-w-[150px]">
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!w-2 !h-2 transition-all"
+        style={{ backgroundColor: 'var(--border-light)' }}
+      />
+      <div
+        className="text-sm font-medium truncate max-w-[160px]"
+        style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}
+      >
         {label}
       </div>
-      {isActive && <div className="text-xs text-blue-500 mt-1">当前</div>}
-      <Handle type="source" position={Position.Bottom} className="!bg-gray-400 !w-2 !h-2" />
+      {isActive && (
+        <div className="text-xs mt-1" style={{ color: 'var(--accent)' }}>
+          当前
+        </div>
+      )}
+      {isOnPath && !isActive && (
+        <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+          路径
+        </div>
+      )}
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!w-2 !h-2 transition-all"
+        style={{ backgroundColor: 'var(--border-light)' }}
+      />
     </div>
   );
 }
