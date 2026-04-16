@@ -5,10 +5,12 @@ interface NodeData {
   label: string;
   isActive: boolean;
   isOnPath: boolean;
+  messageCount?: number;
+  childCount?: number;
 }
 
 function NodeCard({ data, selected }: NodeProps<NodeData>) {
-  const { label, isActive, isOnPath } = data;
+  const { label, isActive, isOnPath, messageCount = 0, childCount = 0 } = data;
 
   const getBgColor = () => {
     if (isActive) return 'var(--active-path)';
@@ -25,11 +27,13 @@ function NodeCard({ data, selected }: NodeProps<NodeData>) {
 
   return (
     <div
-      className="px-4 py-3 rounded-lg min-w-[140px] text-center transition-all duration-200 hover:scale-105"
+      className="px-4 py-3 rounded-lg min-w-[150px] text-center transition-all duration-200 hover:scale-105"
       style={{
         backgroundColor: getBgColor(),
         border: `2px solid ${getBorderColor()}`,
-        boxShadow: selected || isActive ? '0 4px 20px rgba(212, 165, 116, 0.15)' : '0 2px 8px rgba(0,0,0,0.2)',
+        boxShadow: selected || isActive
+          ? '0 4px 20px rgba(212, 165, 116, 0.2)'
+          : '0 2px 8px rgba(0,0,0,0.3)',
       }}
     >
       <Handle
@@ -44,14 +48,21 @@ function NodeCard({ data, selected }: NodeProps<NodeData>) {
       >
         {label}
       </div>
-      {isActive && (
-        <div className="text-xs mt-1" style={{ color: 'var(--accent)' }}>
-          当前
-        </div>
-      )}
-      {isOnPath && !isActive && (
-        <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-          路径
+      <div className="flex items-center justify-center gap-2 mt-1">
+        {isActive && (
+          <span className="text-xs font-medium" style={{ color: 'var(--accent)' }}>
+            当前
+          </span>
+        )}
+        {isOnPath && !isActive && (
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            路径
+          </span>
+        )}
+      </div>
+      {(messageCount > 0 || childCount > 0) && (
+        <div className="text-xs mt-1 opacity-60" style={{ color: 'var(--text-muted)' }}>
+          💬 {messageCount} {childCount > 0 && `· 🌿 ${childCount}`}
         </div>
       )}
       <Handle

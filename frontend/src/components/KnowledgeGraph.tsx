@@ -4,9 +4,11 @@ import ReactFlow, {
   Edge,
   Controls,
   Background,
+  MiniMap,
   useNodesState,
   useEdgesState,
   NodeTypes,
+  BackgroundVariant,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import NodeCard from './NodeCard';
@@ -46,7 +48,21 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
     return path;
   }, [tree, activeNodeId]);
 
-  // Build nodes and edges from tree - use useEffect for side effects
+  // Count total nodes and messages for progress
+  const stats = useMemo(() => {
+    if (!tree) return { nodes: 0, messages: 0 };
+    let nodes = 0;
+    let messages = 0;
+    function traverse(node: ConversationNode) {
+      nodes++;
+      messages += node.messages.length;
+      node.children.forEach(traverse);
+    }
+    traverse(tree);
+    return { nodes, messages };
+  }, [tree]);
+
+  // Build nodes and edges from tree
   useEffect(() => {
     if (!tree) {
       setNodes([]);
@@ -60,7 +76,6 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
     const xStep = 200;
 
     function traverse(node: ConversationNode, depth: number, index: number) {
-      // Position formula: space children evenly at each level
       const siblingCount = node.children.length;
       const baseX = 400;
       const nodeX = siblingCount > 0
@@ -68,14 +83,19 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
         : baseX;
       const nodeY = depth * yStep + 50;
 
+      const isOnPath = pathToActive.has(node.id);
+      const isActive = node.id === activeNodeId;
+
       newNodes.push({
         id: node.id,
         type: 'nodeCard',
         position: { x: nodeX, y: nodeY },
         data: {
           label: node.title,
-          isActive: node.id === activeNodeId,
-          isOnPath: pathToActive.has(node.id),
+          isActive,
+          isOnPath,
+          messageCount: node.messages.length,
+          childCount: node.children.length,
         },
       });
 
@@ -85,9 +105,9 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
           source: node.id,
           target: child.id,
           type: 'smoothstep',
-          style: pathToActive.has(child.id)
-            ? { stroke: '#22c55e', strokeWidth: 2 }
-            : { stroke: '#94a3b8', strokeWidth: 1 },
+          style: isOnPath || pathToActive.has(child.id)
+            ? { stroke: 'var(--accent)', strokeWidth: 2 }
+            : { stroke: 'var(--border)', strokeWidth: 1 },
         });
         traverse(child, depth + 1, i);
       });
@@ -107,25 +127,64 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
 
   if (!tree) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-400">
-        暂无对话数据
+      <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)' }}>
+        <div className="text-center">
+          <p className="text-sm">暂无对话数据</p>
+          <p className="text-xs mt-2 opacity-70">创建新对话开始探索</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onNodeClick={handleNodeClick}
-      nodeTypes={nodeTypes}
-      fitView
-      attributionPosition="bottom-left"
-    >
-      <Controls />
-      <Background />
-    </ReactFlow>
+    <div className="relative w-full h-full">
+      {/* Progress indicator */}
+      <div
+        className="absolute top-3 left-3 z-10 px-3 py-1.5 rounded-lg text-xs"
+        style={{
+          backgroundColor: 'var(--bg-tertiary)',
+          border: '1px solid var(--border)',
+          color: 'var(--text-secondary)'
+        }}
+      >
+        <span className="opacity-70">📊</span> {stats.nodes} 节点 · {stats.messages} 条消息
+      </div>
+
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
+        nodeTypes={nodeTypes}
+        fitView
+        attributionPosition="bottom-left"
+        minZoom={0.1}
+        maxZoom={2}
+      >
+        <Controls
+          showZoom
+          showFitView
+          showInteractive={false}
+        />
+        <MiniMap
+          nodeColor={(node) => {
+            if (node.data?.isActive) return 'var(--accent)';
+            if (node.data?.isOnPath) return 'var(--active-path)';
+            return 'var(--bg-tertiary)';
+          }}
+          maskColor="rgba(0,0,0,0.5)"
+          style={{
+            backgroundColor: 'var(--bg-secondary)',
+          }}
+        />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={20}
+          size={1}
+          color="var(--border)"
+        />
+      </ReactFlow>
+    </div>
   );
 }

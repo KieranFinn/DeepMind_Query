@@ -18,7 +18,7 @@ interface ConversationStore {
   error: string | null;
   selectedModel: string;
   abortController: AbortController | null;
-  isHydrated: boolean;  // Track localStorage hydration
+  isHydrated: boolean;
 
   // Actions
   loadTree: () => Promise<void>;
@@ -30,6 +30,8 @@ interface ConversationStore {
   cancelStreaming: () => void;
   renameNode: (nodeId: string, title: string) => void;
   deleteNode: (nodeId: string) => Promise<void>;
+  getPathToNode: (nodeId: string) => ConversationNode[];
+  generateSummary: (nodeId: string) => string;
   clearError: () => void;
 }
 
@@ -41,6 +43,25 @@ function findNodeById(node: ConversationNode | null, id: string): ConversationNo
     if (found) return found;
   }
   return null;
+}
+
+function getPathToNode(node: ConversationNode, nodeId: string, path: ConversationNode[] = []): ConversationNode[] {
+  path.push(node);
+  if (node.id === nodeId) return path;
+  for (const child of node.children) {
+    const found = getPathToNode(child, nodeId, [...path]);
+    if (found && found[found.length - 1].id === nodeId) return found;
+  }
+  return [];
+}
+
+function generateNodeSummary(node: ConversationNode): string {
+  if (node.messages.length === 0) return '新节点';
+  const firstUserMsg = node.messages.find(m => m.role === 'user');
+  if (!firstUserMsg) return '新节点';
+  // Truncate to ~50 chars
+  const text = firstUserMsg.content.trim();
+  return text.length > 50 ? text.slice(0, 50) + '...' : text;
 }
 
 function renameNodeInTree(node: ConversationNode, nodeId: string, newTitle: string): boolean {
@@ -56,7 +77,7 @@ function renameNodeInTree(node: ConversationNode, nodeId: string, newTitle: stri
 
 function deleteNodeFromTree(node: ConversationNode, nodeId: string): ConversationNode | null {
   if (node.id === nodeId) {
-    return null; // Delete this node (return its children to promote them)
+    return null;
   }
   return {
     ...node,
@@ -80,9 +101,7 @@ export const useConversationStore = create<ConversationStore>()(
 
       loadTree: async () => {
         const { abortController } = get();
-        if (abortController) {
-          abortController.abort();
-        }
+        if (abortController) abortController.abort();
 
         set({ isLoading: true, error: null });
         try {
@@ -122,9 +141,7 @@ export const useConversationStore = create<ConversationStore>()(
 
       sendUserMessage: async (nodeId, content) => {
         const { abortController } = get();
-        if (abortController) {
-          abortController.abort();
-        }
+        if (abortController) abortController.abort();
 
         const controller = new AbortController();
         set({ abortController: controller, isLoading: true, error: null, streamingMessage: '' });
@@ -151,7 +168,6 @@ export const useConversationStore = create<ConversationStore>()(
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-
             if (controller.signal.aborted) break;
 
             const chunk = decoder.decode(value, { stream: true });
@@ -175,9 +191,7 @@ export const useConversationStore = create<ConversationStore>()(
                     }
                   }
                 } catch (parseErr) {
-                  if ((parseErr as Error).message.startsWith('Stream error')) {
-                    throw parseErr;
-                  }
+                  if ((parseErr as Error).message.startsWith('Stream error')) throw parseErr;
                   try {
                     const parsed = JSON.parse(data);
                     const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
@@ -185,9 +199,7 @@ export const useConversationStore = create<ConversationStore>()(
                       fullContent += text;
                       set({ streamingMessage: fullContent });
                     }
-                  } catch {
-                    // Not JSON, skip
-                  }
+                  } catch {}
                 }
               }
             }
@@ -209,9 +221,7 @@ export const useConversationStore = create<ConversationStore>()(
 
       cancelStreaming: () => {
         const { abortController } = get();
-        if (abortController) {
-          abortController.abort();
-        }
+        if (abortController) abortController.abort();
         set({ isLoading: false, streamingMessage: '', abortController: null });
       },
 
@@ -219,23 +229,18 @@ export const useConversationStore = create<ConversationStore>()(
         const { tree } = get();
         if (!tree) return;
         renameNodeInTree(tree, nodeId, title);
-        set({ tree: { ...tree } }); // Trigger re-render
+        set({ tree: { ...tree } });
       },
 
       deleteNode: async (nodeId) => {
         const { tree, activeNodeId } = get();
         if (!tree) return;
-
-        // Can't delete root
         if (tree.id === nodeId) {
           set({ error: '不能删除根节点' });
           return;
         }
-
         const newTree = deleteNodeFromTree(tree, nodeId);
         set({ tree: newTree });
-
-        // If deleted node was active, switch to parent or new root
         if (activeNodeId === nodeId) {
           const deletedNode = findNodeById(tree, nodeId);
           if (deletedNode?.parent_id) {
@@ -246,6 +251,17 @@ export const useConversationStore = create<ConversationStore>()(
             set({ activeNodeId: null });
           }
         }
+      },
+
+      getPathToNode: (nodeId) => {
+        const { tree } = get();
+        if (!tree) return [];
+        return getPathToNode(tree, nodeId);
+      },
+
+      generateSummary: (nodeId) => {
+        const node = findNodeById(get().tree, nodeId);
+        return node ? generateNodeSummary(node) : '';
       },
 
       clearError: () => set({ error: null }),

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useConversationStore, MODELS } from '../store';
 
 interface Props {
@@ -18,15 +18,39 @@ function findNode(node: any, id: string | null): any {
 export default function ConversationPanel({ onBranch }: Props) {
   const {
     tree, activeNodeId, streamingMessage, isLoading, selectedModel, setModel,
-    sendUserMessage, createChildBranch, cancelStreaming, renameNode, deleteNode
+    sendUserMessage, createChildBranch, cancelStreaming, renameNode, deleteNode,
+    getPathToNode, generateSummary, setActiveNode
   } = useConversationStore();
   const [input, setInput] = useState('');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevNodeIdRef = useRef<string | null>(null);
 
   const activeNode = findNode(tree, activeNodeId);
+
+  // Get the path from root to current node for the breadcrumb
+  const pathToNode = useMemo(() => {
+    if (!activeNodeId) return [];
+    return getPathToNode(activeNodeId);
+  }, [activeNodeId, tree, getPathToNode]);
+
+  // Track node changes to show summary transition
+  const [showSummary, setShowSummary] = useState(false);
+  const summaryRef = useRef<string>('');
+
+  useEffect(() => {
+    if (activeNodeId && activeNodeId !== prevNodeIdRef.current) {
+      prevNodeIdRef.current = activeNodeId;
+      // Generate summary for the new node
+      summaryRef.current = generateSummary(activeNodeId);
+      setShowSummary(true);
+      // Hide summary after animation
+      const timer = setTimeout(() => setShowSummary(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [activeNodeId, generateSummary]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -70,11 +94,8 @@ export default function ConversationPanel({ onBranch }: Props) {
   };
 
   const handleTitleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleTitleSave();
-    } else if (e.key === 'Escape') {
-      setIsEditingTitle(false);
-    }
+    if (e.key === 'Enter') handleTitleSave();
+    else if (e.key === 'Escape') setIsEditingTitle(false);
   };
 
   const handleDelete = async () => {
@@ -88,6 +109,10 @@ export default function ConversationPanel({ onBranch }: Props) {
     setTimeout(() => setCopiedIndex(null), 1500);
   };
 
+  const handlePathNodeClick = (nodeId: string) => {
+    setActiveNode(nodeId);
+  };
+
   if (!activeNode) {
     return (
       <div className="flex flex-col h-full items-center justify-center" style={{ color: 'var(--text-muted)' }}>
@@ -99,6 +124,50 @@ export default function ConversationPanel({ onBranch }: Props) {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Path Breadcrumb */}
+      {pathToNode.length > 1 && (
+        <div
+          className="px-4 py-2 flex items-center gap-1 text-xs overflow-x-auto transition-all"
+          style={{
+            borderBottom: '1px solid var(--border)',
+            backgroundColor: 'var(--bg-primary)',
+            opacity: showSummary ? 1 : 0.7
+          }}
+        >
+          {pathToNode.map((node, i) => (
+            <div key={node.id} className="flex items-center flex-shrink-0">
+              {i > 0 && <span className="mx-1" style={{ color: 'var(--text-muted)' }}>›</span>}
+              <button
+                onClick={() => handlePathNodeClick(node.id)}
+                className={`px-2 py-1 rounded transition-all hover:scale-105 ${
+                  node.id === activeNodeId ? 'font-medium' : 'opacity-70'
+                }`}
+                style={{
+                  backgroundColor: node.id === activeNodeId ? 'var(--active-path)' : 'transparent',
+                  color: node.id === activeNodeId ? 'var(--accent)' : 'var(--text-muted)'
+                }}
+              >
+                {node.title.length > 15 ? node.title.slice(0, 15) + '...' : node.title}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Session Summary Banner */}
+      {showSummary && summaryRef.current && (
+        <div
+          className="px-4 py-2 text-xs animate-fade-in"
+          style={{
+            backgroundColor: 'var(--accent)',
+            color: 'var(--bg-primary)',
+            borderBottom: '1px solid var(--border)'
+          }}
+        >
+          💡 {summaryRef.current}
+        </div>
+      )}
+
       {/* Header */}
       <div
         className="px-4 py-3 flex items-center justify-between transition-smooth"
@@ -155,8 +224,8 @@ export default function ConversationPanel({ onBranch }: Props) {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {activeNode.messages.length === 0 && !streamingMessage && (
-          <p className="text-gray-500 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
-            开始对话吧！输入你的问题。
+          <p className="text-center text-sm animate-fade-in" style={{ color: 'var(--text-muted)' }}>
+            开始对话吧！
           </p>
         )}
 
@@ -180,10 +249,7 @@ export default function ConversationPanel({ onBranch }: Props) {
               <button
                 onClick={() => copyMessage(msg.content, i)}
                 className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-xs px-2 py-1 rounded transition-all hover:scale-105"
-                style={{
-                  backgroundColor: 'var(--bg-hover)',
-                  color: 'var(--text-muted)'
-                }}
+                style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-muted)' }}
                 title="复制"
               >
                 {copiedIndex === i ? '✓' : '📋'}
