@@ -1,6 +1,6 @@
 import uuid
+import json
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 from store import store
 from models import (
@@ -57,7 +57,8 @@ async def send_message(node_id: uuid.UUID, req: SendMessageRequest):
         full_response = ""
         async for chunk in stream_chat(req.model, messages):
             full_response += chunk
-            yield chunk
+            # Yield as SSE data: JSON with content field
+            yield {"event": "message", "data": json.dumps({"content": chunk})}
 
         # Save assistant message after streaming complete
         if full_response:

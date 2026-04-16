@@ -90,18 +90,31 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
         const lines = chunk.split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
-            const data = line.slice(6);
+            const data = line.slice(6).trim();
             if (data === '[DONE]') continue;
             try {
-              const parsed = JSON.parse(data);
-              // Handle delta format from both MiniMax and OpenAI
-              const delta = parsed.choices?.[0]?.delta?.content || '';
-              if (delta) {
-                fullContent += delta;
-                set({ streamingMessage: fullContent });
+              // Parse SSE event format: {"event": "message", "data": "{\"content\": \"...\"}"}
+              const sseEvent = JSON.parse(data);
+              if (sseEvent.data) {
+                const inner = JSON.parse(sseEvent.data);
+                const text = inner.content || '';
+                if (text) {
+                  fullContent += text;
+                  set({ streamingMessage: fullContent });
+                }
               }
             } catch {
-              // Already JSON parsed, skip
+              // Try parsing as plain JSON (fallback)
+              try {
+                const parsed = JSON.parse(data);
+                const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
+                if (text) {
+                  fullContent += text;
+                  set({ streamingMessage: fullContent });
+                }
+              } catch {
+                // Not JSON, skip
+              }
             }
           }
         }

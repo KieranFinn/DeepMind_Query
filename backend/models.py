@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -7,28 +7,16 @@ from uuid import UUID, uuid4
 class Message(BaseModel):
     role: str  # "user" | "assistant"
     content: str
-    created_at: datetime = None
-
-    def __init__(self, **data):
-        if 'created_at' not in data or data['created_at'] is None:
-            data['created_at'] = datetime.utcnow()
-        super().__init__(**data)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class ConversationNode(BaseModel):
-    id: UUID = None
+    id: UUID = Field(default_factory=uuid4)
     parent_id: Optional[UUID] = None
     title: str = "新对话"
-    messages: list[Message] = []
-    children: list[UUID] = []
-    created_at: datetime = None
-
-    def __init__(self, **data):
-        if 'id' not in data or data['id'] is None:
-            data['id'] = uuid4()
-        if 'created_at' not in data or data['created_at'] is None:
-            data['created_at'] = datetime.utcnow()
-        super().__init__(**data)
+    messages: list[Message] = Field(default_factory=list)
+    children: list["ConversationNode"] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class CreateConversationRequest(BaseModel):
