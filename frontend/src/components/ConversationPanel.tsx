@@ -32,11 +32,11 @@ export default function ConversationPanel() {
   }, [input, isLoading, activeNode, sendUserMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       handleSend();
     }
-    // Ctrl/Cmd + Enter to create branch
+    // Ctrl/Cmd + Enter to create branch (not for sending)
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       handleBranch();
