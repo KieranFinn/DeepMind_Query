@@ -1,9 +1,5 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { useConversationStore, MODELS } from '../store';
-
-interface Props {
-  onBranch?: () => void;
-}
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { useStore } from '../store';
 
 function findNode(node: any, id: string | null): any {
   if (!node || !id) return null;
@@ -15,53 +11,32 @@ function findNode(node: any, id: string | null): any {
   return null;
 }
 
-export default function ConversationPanel({ onBranch }: Props) {
+export default function ConversationPanel() {
   const {
-    tree, activeNodeId, streamingMessage, isLoading, selectedModel, setModel,
-    sendUserMessage, createChildBranch, cancelStreaming, renameNode, deleteNode,
-    getPathToNode, generateSummary, setActiveNode
-  } = useConversationStore();
+    activeTree, isLoading, streamingMessage,
+    sendUserMessage, createBranch, cancelStreaming,
+    getActiveRegion, getActiveSession
+  } = useStore();
+
   const [input, setInput] = useState('');
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [editedTitle, setEditedTitle] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const prevNodeIdRef = useRef<string | null>(null);
 
-  const activeNode = findNode(tree, activeNodeId);
-
-  // Get the path from root to current node for the breadcrumb
-  const pathToNode = useMemo(() => {
-    if (!activeNodeId) return [];
-    return getPathToNode(activeNodeId);
-  }, [activeNodeId, tree, getPathToNode]);
-
-  // Track node changes to show summary transition
-  const [showSummary, setShowSummary] = useState(false);
-  const summaryRef = useRef<string>('');
-
-  useEffect(() => {
-    if (activeNodeId && activeNodeId !== prevNodeIdRef.current) {
-      prevNodeIdRef.current = activeNodeId;
-      // Generate summary for the new node
-      summaryRef.current = generateSummary(activeNodeId);
-      setShowSummary(true);
-      // Hide summary after animation
-      const timer = setTimeout(() => setShowSummary(false), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [activeNodeId, generateSummary]);
+  const activeRegion = getActiveRegion();
+  const activeSession = getActiveSession();
+  const activeNodeId = activeTree?.id || null;
+  const activeNode = activeTree;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeNode?.messages, streamingMessage]);
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || !activeNodeId || isLoading) return;
+    if (!input.trim() || isLoading || !activeTree) return;
     const content = input.trim();
     setInput('');
-    await sendUserMessage(activeNodeId, content);
-  }, [input, activeNodeId, isLoading, sendUserMessage]);
+    await sendUserMessage(content);
+  }, [input, isLoading, activeTree, sendUserMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -71,36 +46,13 @@ export default function ConversationPanel({ onBranch }: Props) {
   };
 
   const handleBranch = async () => {
-    if (!activeNodeId) return;
-    await createChildBranch(activeNodeId, `分支`);
-    onBranch?.();
+    if (!activeTree) return;
+    // Create branch from root node
+    await createBranch(activeTree.id, `分支 ${activeTree.children.length + 1}`);
   };
 
   const handleCancel = () => {
     cancelStreaming();
-  };
-
-  const handleTitleDoubleClick = () => {
-    if (!activeNode) return;
-    setEditedTitle(activeNode.title);
-    setIsEditingTitle(true);
-  };
-
-  const handleTitleSave = () => {
-    if (activeNodeId && editedTitle.trim()) {
-      renameNode(activeNodeId, editedTitle.trim());
-    }
-    setIsEditingTitle(false);
-  };
-
-  const handleTitleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleTitleSave();
-    else if (e.key === 'Escape') setIsEditingTitle(false);
-  };
-
-  const handleDelete = async () => {
-    if (!activeNodeId || !window.confirm('删除此分支？此操作不可撤销。')) return;
-    await deleteNode(activeNodeId);
   };
 
   const copyMessage = (content: string, index: number) => {
@@ -109,127 +61,58 @@ export default function ConversationPanel({ onBranch }: Props) {
     setTimeout(() => setCopiedIndex(null), 1500);
   };
 
-  const handlePathNodeClick = (nodeId: string) => {
-    setActiveNode(nodeId);
-  };
-
-  if (!activeNode) {
+  if (!activeRegion) {
     return (
       <div className="flex flex-col h-full items-center justify-center" style={{ color: 'var(--text-muted)' }}>
-        <p className="text-sm">选择一个节点开始对话</p>
-        <p className="text-xs mt-2">或创建新对话</p>
+        <p className="text-sm">创建或选择一个知识区</p>
+      </div>
+    );
+  }
+
+  if (!activeSession) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center" style={{ color: 'var(--text-muted)' }}>
+        <p className="text-sm">在此知识区创建新会话</p>
+      </div>
+    );
+  }
+
+  if (!activeTree) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center" style={{ color: 'var(--text-muted)' }}>
+        <p className="text-sm">加载中...</p>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col h-full">
-      {/* Path Breadcrumb */}
-      {pathToNode.length > 1 && (
-        <div
-          className="px-4 py-2 flex items-center gap-1 text-xs overflow-x-auto transition-all"
-          style={{
-            borderBottom: '1px solid var(--border)',
-            backgroundColor: 'var(--bg-primary)',
-            opacity: showSummary ? 1 : 0.7
-          }}
-        >
-          {pathToNode.map((node, i) => (
-            <div key={node.id} className="flex items-center flex-shrink-0">
-              {i > 0 && <span className="mx-1" style={{ color: 'var(--text-muted)' }}>›</span>}
-              <button
-                onClick={() => handlePathNodeClick(node.id)}
-                className={`px-2 py-1 rounded transition-all hover:scale-105 ${
-                  node.id === activeNodeId ? 'font-medium' : 'opacity-70'
-                }`}
-                style={{
-                  backgroundColor: node.id === activeNodeId ? 'var(--active-path)' : 'transparent',
-                  color: node.id === activeNodeId ? 'var(--accent)' : 'var(--text-muted)'
-                }}
-              >
-                {node.title.length > 15 ? node.title.slice(0, 15) + '...' : node.title}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Session Summary Banner */}
-      {showSummary && summaryRef.current && (
-        <div
-          className="px-4 py-2 text-xs animate-fade-in"
-          style={{
-            backgroundColor: 'var(--accent)',
-            color: 'var(--bg-primary)',
-            borderBottom: '1px solid var(--border)'
-          }}
-        >
-          💡 {summaryRef.current}
-        </div>
-      )}
-
       {/* Header */}
       <div
-        className="px-4 py-3 flex items-center justify-between transition-smooth"
+        className="px-4 py-3 flex items-center justify-between"
         style={{ borderBottom: '1px solid var(--border)', backgroundColor: 'var(--bg-tertiary)' }}
       >
         <div className="min-w-0 flex-1">
-          {isEditingTitle ? (
-            <input
-              value={editedTitle}
-              onChange={(e) => setEditedTitle(e.target.value)}
-              onBlur={handleTitleSave}
-              onKeyDown={handleTitleKeyDown}
-              autoFocus
-              className="w-full px-2 py-1 text-sm font-semibold rounded transition-all"
-              style={{
-                backgroundColor: 'var(--bg-primary)',
-                color: 'var(--text-primary)',
-                border: '1px solid var(--accent)',
-                outline: 'none'
-              }}
-            />
-          ) : (
-            <h2
-              className="font-semibold text-sm truncate cursor-pointer transition-all hover:opacity-80"
-              style={{ color: 'var(--text-primary)' }}
-              onDoubleClick={handleTitleDoubleClick}
-              title="双击编辑标题"
-            >
-              {activeNode.title}
-            </h2>
-          )}
+          <h2 className="font-semibold text-sm truncate" style={{ color: 'var(--text-primary)' }}>
+            {activeTree.title}
+          </h2>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            {activeNode.messages.length} 条消息
-            {activeNode.children.length > 0 && ` · ${activeNode.children.length} 个分支`}
+            <span style={{ color: activeRegion.color }}>{activeRegion.name}</span>
+            {' · '}
+            {activeTree.messages.length} 条消息 · {activeTree.children.length} 个分支
           </p>
         </div>
-        <select
-          value={selectedModel}
-          onChange={(e) => setModel(e.target.value)}
-          className="text-xs px-2 py-1 rounded-lg ml-2 flex-shrink-0 transition-all"
-          style={{
-            backgroundColor: 'var(--bg-secondary)',
-            color: 'var(--text-secondary)',
-            border: '1px solid var(--border)',
-            cursor: 'pointer'
-          }}
-        >
-          {MODELS.map((m) => (
-            <option key={m.id} value={m.id} style={{ backgroundColor: 'var(--bg-secondary)' }}>{m.name}</option>
-          ))}
-        </select>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {activeNode.messages.length === 0 && !streamingMessage && (
+        {activeTree.messages.length === 0 && !streamingMessage && (
           <p className="text-center text-sm animate-fade-in" style={{ color: 'var(--text-muted)' }}>
             开始对话吧！
           </p>
         )}
 
-        {activeNode.messages.map((msg, i) => (
+        {activeTree.messages.map((msg, i) => (
           <div
             key={i}
             className="message-enter flex animate-fade-in"
@@ -250,7 +133,6 @@ export default function ConversationPanel({ onBranch }: Props) {
                 onClick={() => copyMessage(msg.content, i)}
                 className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-xs px-2 py-1 rounded transition-all hover:scale-105"
                 style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-muted)' }}
-                title="复制"
               >
                 {copiedIndex === i ? '✓' : '📋'}
               </button>
@@ -280,7 +162,7 @@ export default function ConversationPanel({ onBranch }: Props) {
 
       {/* Actions */}
       <div
-        className="px-4 py-2 flex gap-2 items-center transition-smooth"
+        className="px-4 py-2 flex gap-2 items-center"
         style={{ borderTop: '1px solid var(--border)' }}
       >
         <button
@@ -289,7 +171,7 @@ export default function ConversationPanel({ onBranch }: Props) {
           className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105 disabled:opacity-50"
           style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--success)', border: '1px solid var(--border)' }}
         >
-          + 继续追问
+          + 追问
         </button>
         {isLoading && (
           <button
@@ -300,21 +182,10 @@ export default function ConversationPanel({ onBranch }: Props) {
             取消
           </button>
         )}
-        <div className="flex-1" />
-        {activeNode.parent_id && (
-          <button
-            onClick={handleDelete}
-            className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105 hover:opacity-80"
-            style={{ color: 'var(--error)' }}
-            title="删除此分支"
-          >
-            🗑️
-          </button>
-        )}
       </div>
 
       {/* Input */}
-      <div className="p-4 transition-smooth" style={{ borderTop: '1px solid var(--border)' }}>
+      <div className="p-4" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="flex gap-2">
           <textarea
             value={input}

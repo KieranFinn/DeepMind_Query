@@ -19,9 +19,7 @@ function NodeCard({ data, selected }: NodeProps<NodeData>) {
   };
 
   const getBorderColor = () => {
-    if (selected) return 'var(--accent)';
-    if (isActive) return 'var(--accent)';
-    if (isOnPath) return 'var(--border-light)';
+    if (selected || isActive) return 'var(--accent)';
     return 'var(--border)';
   };
 
@@ -50,14 +48,7 @@ function NodeCard({ data, selected }: NodeProps<NodeData>) {
       </div>
       <div className="flex items-center justify-center gap-2 mt-1">
         {isActive && (
-          <span className="text-xs font-medium" style={{ color: 'var(--accent)' }}>
-            当前
-          </span>
-        )}
-        {isOnPath && !isActive && (
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            路径
-          </span>
+          <span className="text-xs font-medium" style={{ color: 'var(--accent)' }}>当前</span>
         )}
       </div>
       {(messageCount > 0 || childCount > 0) && (

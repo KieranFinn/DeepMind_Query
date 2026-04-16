@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { ConversationNode } from './types';
-import { getTree, createConversation, createBranch, streamMessage } from './api';
+import { KnowledgeRegion, Session, ConversationNode } from './types';
+import * as api from './api';
 
 const MODELS = [
   { id: 'abab6.5s-chat', name: 'MiniMax abab6.5s' },
@@ -10,9 +10,14 @@ const MODELS = [
   { id: 'gpt-4o', name: 'GPT-4o' },
 ];
 
-interface ConversationStore {
-  tree: ConversationNode | null;
-  activeNodeId: string | null;
+interface AppState {
+  // Regions & Sessions
+  regions: KnowledgeRegion[];
+  activeRegionId: string | null;
+  activeSessionId: string | null;
+
+  // UI State
+  activeTree: ConversationNode | null;
   streamingMessage: string;
   isLoading: boolean;
   error: string | null;
@@ -20,80 +25,46 @@ interface ConversationStore {
   abortController: AbortController | null;
   isHydrated: boolean;
 
-  // Actions
+  // Region actions
+  loadRegions: () => Promise<void>;
+  createRegion: (name: string, description?: string, color?: string) => Promise<void>;
+  deleteRegion: (regionId: string) => Promise<void>;
+  setActiveRegion: (regionId: string) => Promise<void>;
+
+  // Session actions
+  loadSessions: (regionId: string) => Promise<void>;
+  createSession: (regionId: string, title?: string) => Promise<void>;
+  setActiveSession: (sessionId: string) => Promise<void>;
+
+  // Tree actions
   loadTree: () => Promise<void>;
-  setActiveNode: (id: string) => void;
-  setModel: (model: string) => void;
-  createRootConversation: (title?: string) => Promise<void>;
-  createChildBranch: (parentId: string, title?: string) => Promise<void>;
-  sendUserMessage: (nodeId: string, content: string) => Promise<void>;
+  sendUserMessage: (content: string) => Promise<void>;
+  createBranch: (parentNodeId: string, title?: string) => Promise<void>;
   cancelStreaming: () => void;
-  renameNode: (nodeId: string, title: string) => void;
-  deleteNode: (nodeId: string) => Promise<void>;
-  getPathToNode: (nodeId: string) => ConversationNode[];
-  generateSummary: (nodeId: string) => string;
+
+  // Utils
+  setModel: (model: string) => void;
   clearError: () => void;
+  getActiveRegion: () => KnowledgeRegion | null;
+  getActiveSession: () => Session | null;
 }
 
-function findNodeById(node: ConversationNode | null, id: string): ConversationNode | null {
-  if (!node) return null;
-  if (node.id === id) return node;
-  for (const child of node.children) {
-    const found = findNodeById(child, id);
-    if (found) return found;
-  }
-  return null;
+function findRegion(regions: KnowledgeRegion[], regionId: string): KnowledgeRegion | null {
+  return regions.find(r => r.id === regionId) || null;
 }
 
-function getPathToNode(node: ConversationNode, nodeId: string, path: ConversationNode[] = []): ConversationNode[] {
-  path.push(node);
-  if (node.id === nodeId) return path;
-  for (const child of node.children) {
-    const found = getPathToNode(child, nodeId, [...path]);
-    if (found && found[found.length - 1].id === nodeId) return found;
-  }
-  return [];
+function findSession(region: KnowledgeRegion | null, sessionId: string): Session | null {
+  if (!region) return null;
+  return region.sessions.find(s => s.id === sessionId) || null;
 }
 
-function generateNodeSummary(node: ConversationNode): string {
-  if (node.messages.length === 0) return '新节点';
-  const firstUserMsg = node.messages.find(m => m.role === 'user');
-  if (!firstUserMsg) return '新节点';
-  // Truncate to ~50 chars
-  const text = firstUserMsg.content.trim();
-  return text.length > 50 ? text.slice(0, 50) + '...' : text;
-}
-
-function renameNodeInTree(node: ConversationNode, nodeId: string, newTitle: string): ConversationNode | null {
-  if (node.id === nodeId) {
-    return { ...node, title: newTitle };
-  }
-  const newChildren = node.children
-    .map(child => renameNodeInTree(child, nodeId, newTitle))
-    .filter((c): c is ConversationNode => c !== null);
-  if (newChildren.length !== node.children.length) {
-    return { ...node, children: newChildren };
-  }
-  return null; // No change made
-}
-
-function deleteNodeFromTree(node: ConversationNode, nodeId: string): ConversationNode | null {
-  if (node.id === nodeId) {
-    return null;
-  }
-  return {
-    ...node,
-    children: node.children
-      .map(child => deleteNodeFromTree(child, nodeId))
-      .filter((c): c is ConversationNode => c !== null)
-  };
-}
-
-export const useConversationStore = create<ConversationStore>()(
+export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
-      tree: null,
-      activeNodeId: null,
+      regions: [],
+      activeRegionId: null,
+      activeSessionId: null,
+      activeTree: null,
       streamingMessage: '',
       isLoading: false,
       error: null,
@@ -101,56 +72,140 @@ export const useConversationStore = create<ConversationStore>()(
       abortController: null,
       isHydrated: false,
 
-      loadTree: async () => {
-        const { abortController } = get();
-        if (abortController) abortController.abort();
+      // ============ Region Actions ============
 
+      loadRegions: async () => {
         set({ isLoading: true, error: null });
         try {
-          const { root } = await getTree();
-          set({ tree: root, isLoading: false, isHydrated: true });
-        } catch (e) {
-          if ((e as Error).name !== 'AbortError') {
-            set({ error: (e as Error).message, isLoading: false, isHydrated: true });
+          const regions = await api.getRegions();
+          set({ regions, isLoading: false, isHydrated: true });
+
+          // Auto-select first region if none active
+          const { activeRegionId, activeSessionId } = get();
+          if (!activeRegionId && regions.length > 0) {
+            set({ activeRegionId: regions[0].id });
           }
+        } catch (e) {
+          set({ error: (e as Error).message, isLoading: false, isHydrated: true });
         }
       },
 
-      setActiveNode: (id) => set({ activeNodeId: id }),
-
-      setModel: (model) => set({ selectedModel: model }),
-
-      createRootConversation: async (title) => {
+      createRegion: async (name, description, color) => {
         set({ isLoading: true, error: null });
         try {
-          const node = await createConversation(title);
-          set({ tree: node, activeNodeId: node.id, isLoading: false });
+          const region = await api.createRegion(name, description, color);
+          set(state => ({
+            regions: [...state.regions, region],
+            activeRegionId: region.id,
+            isLoading: false
+          }));
+          // Create first session in new region
+          await get().createSession(region.id, '第一个会话');
         } catch (e) {
           set({ error: (e as Error).message, isLoading: false });
         }
       },
 
-      createChildBranch: async (parentId, title) => {
+      deleteRegion: async (regionId) => {
         set({ isLoading: true, error: null });
         try {
-          const child = await createBranch(parentId, title);
+          await api.deleteRegion(regionId);
+          set(state => {
+            const newRegions = state.regions.filter(r => r.id !== regionId);
+            const newActiveId = state.activeRegionId === regionId
+              ? (newRegions[0]?.id || null)
+              : state.activeRegionId;
+            return {
+              regions: newRegions,
+              activeRegionId: newActiveId,
+              activeSessionId: newActiveId !== regionId ? state.activeSessionId : null,
+              isLoading: false
+            };
+          });
+        } catch (e) {
+          set({ error: (e as Error).message, isLoading: false });
+        }
+      },
+
+      setActiveRegion: async (regionId) => {
+        try {
+          await api.setActiveRegion(regionId);
+          set({ activeRegionId: regionId, activeSessionId: null, activeTree: null });
+
+          // Load sessions and auto-select first
+          const region = findRegion(get().regions, regionId);
+          if (region && region.sessions.length > 0) {
+            set({ activeSessionId: region.sessions[0].id });
+            await get().loadTree();
+          }
+        } catch (e) {
+          set({ error: (e as Error).message });
+        }
+      },
+
+      // ============ Session Actions ============
+
+      loadSessions: async (regionId) => {
+        // Sessions are stored within regions, no separate load needed
+      },
+
+      createSession: async (regionId, title) => {
+        set({ isLoading: true, error: null });
+        try {
+          const session = await api.createSession(regionId, title);
+          set(state => ({
+            regions: state.regions.map(r =>
+              r.id === regionId
+                ? { ...r, sessions: [...r.sessions, session] }
+                : r
+            ),
+            activeSessionId: session.id,
+            isLoading: false
+          }));
+          // Load the tree for the new session
           await get().loadTree();
-          set({ activeNodeId: child.id, isLoading: false });
         } catch (e) {
           set({ error: (e as Error).message, isLoading: false });
         }
       },
 
-      sendUserMessage: async (nodeId, content) => {
-        const { abortController } = get();
+      setActiveSession: async (sessionId) => {
+        const { activeRegionId } = get();
+        if (!activeRegionId) return;
+
+        set({ activeSessionId: sessionId });
+        await get().loadTree();
+      },
+
+      // ============ Tree Actions ============
+
+      loadTree: async () => {
+        const { activeRegionId, activeSessionId } = get();
+        if (!activeRegionId || !activeSessionId) {
+          set({ activeTree: null });
+          return;
+        }
+
+        set({ isLoading: true, error: null });
+        try {
+          const tree = await api.getSessionTree(activeRegionId, activeSessionId);
+          set({ activeTree: tree, isLoading: false });
+        } catch (e) {
+          set({ error: (e as Error).message, isLoading: false });
+        }
+      },
+
+      sendUserMessage: async (content) => {
+        const { activeRegionId, activeSessionId, abortController, selectedModel } = get();
+        if (!activeRegionId || !activeSessionId) return;
+
         if (abortController) abortController.abort();
 
         const controller = new AbortController();
         set({ abortController: controller, isLoading: true, error: null, streamingMessage: '' });
 
         try {
-          const model = get().selectedModel;
-          const response = await streamMessage(nodeId, content, model);
+          const response = await api.streamMessage(activeRegionId, activeSessionId, content, selectedModel);
 
           if (!response.ok) {
             let errorMsg = `HTTP ${response.status}`;
@@ -221,60 +276,47 @@ export const useConversationStore = create<ConversationStore>()(
         }
       },
 
+      createBranch: async (parentNodeId, title) => {
+        const { activeRegionId, activeSessionId } = get();
+        if (!activeRegionId || !activeSessionId) return;
+
+        set({ isLoading: true, error: null });
+        try {
+          await api.createBranch(activeRegionId, activeSessionId, parentNodeId, title);
+          await get().loadTree();
+        } catch (e) {
+          set({ error: (e as Error).message, isLoading: false });
+        }
+      },
+
       cancelStreaming: () => {
         const { abortController } = get();
         if (abortController) abortController.abort();
         set({ isLoading: false, streamingMessage: '', abortController: null });
       },
 
-      renameNode: (nodeId, title) => {
-        const { tree } = get();
-        if (!tree) return;
-        const newTree = renameNodeInTree(tree, nodeId, title);
-        if (newTree) {
-          set({ tree: newTree });
-        }
-      },
+      // ============ Utils ============
 
-      deleteNode: async (nodeId) => {
-        const { tree, activeNodeId } = get();
-        if (!tree) return;
-        if (tree.id === nodeId) {
-          set({ error: '不能删除根节点' });
-          return;
-        }
-        const newTree = deleteNodeFromTree(tree, nodeId);
-        set({ tree: newTree });
-        if (activeNodeId === nodeId) {
-          const deletedNode = findNodeById(tree, nodeId);
-          if (deletedNode?.parent_id) {
-            set({ activeNodeId: deletedNode.parent_id });
-          } else if (newTree) {
-            set({ activeNodeId: newTree.id });
-          } else {
-            set({ activeNodeId: null });
-          }
-        }
-      },
-
-      getPathToNode: (nodeId) => {
-        const { tree } = get();
-        if (!tree) return [];
-        return getPathToNode(tree, nodeId);
-      },
-
-      generateSummary: (nodeId) => {
-        const node = findNodeById(get().tree, nodeId);
-        return node ? generateNodeSummary(node) : '';
-      },
+      setModel: (model) => set({ selectedModel: model }),
 
       clearError: () => set({ error: null }),
+
+      getActiveRegion: () => {
+        const { regions, activeRegionId } = get();
+        return findRegion(regions, activeRegionId || '');
+      },
+
+      getActiveSession: () => {
+        const region = get().getActiveRegion();
+        const { activeSessionId } = get();
+        return findSession(region, activeSessionId || '');
+      },
     }),
     {
       name: 'deepmind-query-storage',
       partialize: (state) => ({
-        tree: state.tree,
-        activeNodeId: state.activeNodeId,
+        activeRegionId: state.activeRegionId,
+        activeSessionId: state.activeSessionId,
         selectedModel: state.selectedModel,
       }),
       onRehydrateStorage: () => (state) => {

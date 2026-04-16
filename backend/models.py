@@ -19,14 +19,36 @@ class ConversationNode(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class CreateConversationRequest(BaseModel):
+class Session(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    title: str = "新会话"
+    root_node: ConversationNode = Field(default_factory=lambda: ConversationNode())
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_active_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class KnowledgeRegion(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    name: str = "新知识区"
+    description: str = ""
+    color: str = "#d4a574"
+    sessions: list[Session] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_active_at: datetime = Field(default_factory=datetime.utcnow)
+    tags: list[str] = Field(default_factory=list)
+
+
+class CreateRegionRequest(BaseModel):
+    name: str = "新知识区"
+    description: Optional[str] = ""
+    color: Optional[str] = "#d4a574"
+    tags: Optional[list[str]] = []
+
+
+class CreateSessionRequest(BaseModel):
     title: Optional[str] = None
 
 
 class SendMessageRequest(BaseModel):
     content: str
     model: str = "gpt-4o-mini"
-
-
-class CreateBranchRequest(BaseModel):
-    title: Optional[str] = None
