@@ -89,8 +89,14 @@ export const useStore = create<AppState>()(
           if (!activeRegionId && regions.length > 0) {
             const firstRegionId = regions[0].id;
             set({ activeRegionId: firstRegionId });
-            // Also load the graph for this region
             const graph = await api.getGraph(firstRegionId);
+            set({
+              graph,
+              activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null
+            });
+          } else if (activeRegionId) {
+            // Active region was restored from localStorage - load its graph
+            const graph = await api.getGraph(activeRegionId);
             set({
               graph,
               activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null
