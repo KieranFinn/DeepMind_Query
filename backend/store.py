@@ -161,11 +161,13 @@ class ConversationStore:
         # Save to database
         self._save_region_to_db(region)
 
+        # Add to in-memory store BEFORE creating node (create_node needs self.regions[region_id])
+        self.regions[region_id] = region
+
         # Create first node automatically (create_node handles adding to graph.nodes)
         self.create_node(region_id, "第一个会话")
 
         # Now the region's graph has the node (via create_node)
-        self.regions[region_id] = region
 
         if self.active_region_id is None:
             self.active_region_id = region_id

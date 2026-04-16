@@ -359,8 +359,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       onMouseDown={(e) => containerRef.current && handleMouseDown(e, containerRef.current)}
       className="fixed rounded-xl shadow-2xl overflow-hidden"
       style={{
-        left: position.x || SIDEBAR_WIDTH,
-        top: position.y || 100,
+        left: position.x ?? SIDEBAR_WIDTH,
+        top: position.y ?? 100,
         width: '320px',
         height: '240px',
         backgroundColor: 'var(--bg-secondary)',
