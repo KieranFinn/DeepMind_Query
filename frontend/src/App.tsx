@@ -54,7 +54,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 }
 
 function App() {
-  const { loadTree, setActiveNode, error, clearError, isHydrated, tree, activeNodeId, sendUserMessage } = useConversationStore();
+  const { loadTree, setActiveNode, error, clearError, isHydrated } = useConversationStore();
 
   // Load tree on mount
   useEffect(() => {

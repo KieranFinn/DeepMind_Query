@@ -64,15 +64,17 @@ function generateNodeSummary(node: ConversationNode): string {
   return text.length > 50 ? text.slice(0, 50) + '...' : text;
 }
 
-function renameNodeInTree(node: ConversationNode, nodeId: string, newTitle: string): boolean {
+function renameNodeInTree(node: ConversationNode, nodeId: string, newTitle: string): ConversationNode | null {
   if (node.id === nodeId) {
-    node.title = newTitle;
-    return true;
+    return { ...node, title: newTitle };
   }
-  for (const child of node.children) {
-    if (renameNodeInTree(child, nodeId, newTitle)) return true;
+  const newChildren = node.children
+    .map(child => renameNodeInTree(child, nodeId, newTitle))
+    .filter((c): c is ConversationNode => c !== null);
+  if (newChildren.length !== node.children.length) {
+    return { ...node, children: newChildren };
   }
-  return false;
+  return null; // No change made
 }
 
 function deleteNodeFromTree(node: ConversationNode, nodeId: string): ConversationNode | null {
@@ -228,8 +230,10 @@ export const useConversationStore = create<ConversationStore>()(
       renameNode: (nodeId, title) => {
         const { tree } = get();
         if (!tree) return;
-        renameNodeInTree(tree, nodeId, title);
-        set({ tree: { ...tree } });
+        const newTree = renameNodeInTree(tree, nodeId, title);
+        if (newTree) {
+          set({ tree: newTree });
+        }
       },
 
       deleteNode: async (nodeId) => {

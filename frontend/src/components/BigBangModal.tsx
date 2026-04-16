@@ -28,6 +28,7 @@ function analyzeTree(node: ConversationNode | null): AnalysisResult | null {
   const branchFactors: number[] = [];
 
   function traverse(n: ConversationNode, depth: number) {
+    if (depth > 100) return; // Safety limit
     totalNodes++;
     totalMessages += n.messages.length;
     maxDepth = Math.max(maxDepth, depth);
