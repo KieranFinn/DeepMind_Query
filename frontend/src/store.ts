@@ -16,6 +16,7 @@ interface ConversationStore {
   isLoading: boolean;
   error: string | null;
   selectedModel: string;
+  abortController: AbortController | null;
 
   // Actions
   loadTree: () => Promise<void>;
@@ -24,6 +25,7 @@ interface ConversationStore {
   createRootConversation: (title?: string) => Promise<void>;
   createChildBranch: (parentId: string, title?: string) => Promise<void>;
   sendUserMessage: (nodeId: string, content: string) => Promise<void>;
+  cancelStreaming: () => void;
   clearError: () => void;
 }
 
@@ -34,14 +36,23 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
   isLoading: false,
   error: null,
   selectedModel: MODELS[0].id,
+  abortController: null,
 
   loadTree: async () => {
+    // Cancel any ongoing streaming before reloading
+    const { abortController } = get();
+    if (abortController) {
+      abortController.abort();
+    }
+
     set({ isLoading: true, error: null });
     try {
       const { root } = await getTree();
       set({ tree: root, isLoading: false });
     } catch (e) {
-      set({ error: (e as Error).message, isLoading: false });
+      if ((e as Error).name !== 'AbortError') {
+        set({ error: (e as Error).message, isLoading: false });
+      }
     }
   },
 
@@ -71,20 +82,42 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
   },
 
   sendUserMessage: async (nodeId, content) => {
-    set({ isLoading: true, error: null, streamingMessage: '' });
+    // Cancel any ongoing stream first
+    const { abortController } = get();
+    if (abortController) {
+      abortController.abort();
+    }
+
+    const controller = new AbortController();
+    set({ abortController: controller, isLoading: true, error: null, streamingMessage: '' });
+
     try {
       const model = get().selectedModel;
       const response = await streamMessage(nodeId, content, model);
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
 
+      if (!response.ok) {
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          errorMsg = errData.detail || errorMsg;
+        } catch {}
+        throw new Error(errorMsg);
+      }
+
+      const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
+      const decoder = new TextDecoder();
       let fullContent = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
+        // Check if aborted
+        if (controller.signal.aborted) {
+          break;
+        }
 
         const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split('\n');
@@ -95,6 +128,10 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
             try {
               // Parse SSE event format: {"event": "message", "data": "{\"content\": \"...\"}"}
               const sseEvent = JSON.parse(data);
+              if (sseEvent.event === 'error') {
+                const errData = JSON.parse(sseEvent.data);
+                throw new Error(errData.error || 'Stream error');
+              }
               if (sseEvent.data) {
                 const inner = JSON.parse(sseEvent.data);
                 const text = inner.content || '';
@@ -103,8 +140,11 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
                   set({ streamingMessage: fullContent });
                 }
               }
-            } catch {
-              // Try parsing as plain JSON (fallback)
+            } catch (parseErr) {
+              // Try plain JSON fallback
+              if ((parseErr as Error).message.startsWith('Stream error')) {
+                throw parseErr;
+              }
               try {
                 const parsed = JSON.parse(data);
                 const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
@@ -120,11 +160,27 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
         }
       }
 
-      await get().loadTree();
-      set({ streamingMessage: '', isLoading: false });
+      // Only reload if not aborted
+      if (!controller.signal.aborted) {
+        await get().loadTree();
+      }
     } catch (e) {
-      set({ error: (e as Error).message, isLoading: false, streamingMessage: '' });
+      if ((e as Error).name !== 'AbortError') {
+        set({ error: (e as Error).message, isLoading: false, streamingMessage: '' });
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        set({ streamingMessage: '', abortController: null });
+      }
     }
+  },
+
+  cancelStreaming: () => {
+    const { abortController } = get();
+    if (abortController) {
+      abortController.abort();
+    }
+    set({ isLoading: false, streamingMessage: '', abortController: null });
   },
 
   clearError: () => set({ error: null }),

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import ReactFlow, {
   Node,
   Edge,
@@ -46,8 +46,8 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
     return path;
   }, [tree, activeNodeId]);
 
-  // Build nodes and edges from tree
-  useMemo(() => {
+  // Build nodes and edges from tree - use useEffect for side effects
+  useEffect(() => {
     if (!tree) {
       setNodes([]);
       setEdges([]);
@@ -56,12 +56,16 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
 
     const newNodes: Node[] = [];
     const newEdges: Edge[] = [];
-    let xOffset = 0;
     const yStep = 150;
     const xStep = 200;
 
     function traverse(node: ConversationNode, depth: number, index: number) {
-      const nodeX = (index - Math.pow(2, depth) / 2) * xStep + 400;
+      // Position formula: space children evenly at each level
+      const siblingCount = node.children.length;
+      const baseX = 400;
+      const nodeX = siblingCount > 0
+        ? baseX + (index - (siblingCount - 1) / 2) * xStep
+        : baseX;
       const nodeY = depth * yStep + 50;
 
       newNodes.push({
@@ -81,7 +85,9 @@ export default function KnowledgeGraph({ onNodeClick }: Props) {
           source: node.id,
           target: child.id,
           type: 'smoothstep',
-          style: pathToActive.has(child.id) ? { stroke: '#22c55e', strokeWidth: 2 } : { stroke: '#94a3b8', strokeWidth: 1 },
+          style: pathToActive.has(child.id)
+            ? { stroke: '#22c55e', strokeWidth: 2 }
+            : { stroke: '#94a3b8', strokeWidth: 1 },
         });
         traverse(child, depth + 1, i);
       });

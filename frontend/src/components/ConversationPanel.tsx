@@ -1,38 +1,40 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useConversationStore, MODELS } from '../store';
 
 interface Props {
   onBranch?: () => void;
 }
 
+function findNode(node: any, id: string | null): any {
+  if (!node || !id) return null;
+  if (node.id === id) return node;
+  for (const child of node.children || []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 export default function ConversationPanel({ onBranch }: Props) {
-  const { tree, activeNodeId, streamingMessage, isLoading, selectedModel, setModel, sendUserMessage, createChildBranch } = useConversationStore();
+  const {
+    tree, activeNodeId, streamingMessage, isLoading, selectedModel, setModel,
+    sendUserMessage, createChildBranch, cancelStreaming
+  } = useConversationStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Find active node in tree
   const activeNode = findNode(tree, activeNodeId);
-
-  function findNode(node: any, id: string | null): any {
-    if (!node || !id) return null;
-    if (node.id === id) return node;
-    for (const child of node.children || []) {
-      const found = findNode(child, id);
-      if (found) return found;
-    }
-    return null;
-  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeNode?.messages, streamingMessage]);
 
-  const handleSend = async () => {
+  const handleSend = useCallback(async () => {
     if (!input.trim() || !activeNodeId || isLoading) return;
     const content = input.trim();
     setInput('');
     await sendUserMessage(activeNodeId, content);
-  };
+  }, [input, activeNodeId, isLoading, sendUserMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -45,6 +47,10 @@ export default function ConversationPanel({ onBranch }: Props) {
     if (!activeNodeId) return;
     await createChildBranch(activeNodeId, `分支`);
     onBranch?.();
+  };
+
+  const handleCancel = () => {
+    cancelStreaming();
   };
 
   if (!activeNode) {
@@ -60,14 +66,17 @@ export default function ConversationPanel({ onBranch }: Props) {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
-        <div>
-          <h2 className="font-semibold text-gray-800">{activeNode.title}</h2>
-          <p className="text-xs text-gray-500">{activeNode.messages.length} 条消息</p>
+        <div className="min-w-0 flex-1">
+          <h2 className="font-semibold text-gray-800 truncate">{activeNode.title}</h2>
+          <p className="text-xs text-gray-500">
+            {activeNode.messages.length} 条消息
+            {activeNode.children.length > 0 && ` · ${activeNode.children.length} 个分支`}
+          </p>
         </div>
         <select
           value={selectedModel}
           onChange={(e) => setModel(e.target.value)}
-          className="text-xs px-2 py-1 border border-gray-300 rounded-md bg-white"
+          className="text-xs px-2 py-1 border border-gray-300 rounded-md bg-white ml-2 flex-shrink-0"
         >
           {MODELS.map((m) => (
             <option key={m.id} value={m.id}>{m.name}</option>
@@ -89,7 +98,7 @@ export default function ConversationPanel({ onBranch }: Props) {
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[80%] px-4 py-2 rounded-lg ${
+              className={`max-w-[85%] px-4 py-2 rounded-lg ${
                 msg.role === 'user'
                   ? 'bg-blue-500 text-white'
                   : 'bg-gray-100 text-gray-800'
@@ -102,9 +111,8 @@ export default function ConversationPanel({ onBranch }: Props) {
 
         {streamingMessage && (
           <div className="flex justify-start">
-            <div className="max-w-[80%] px-4 py-2 rounded-lg bg-gray-100 text-gray-800">
-              <p className="whitespace-pre-wrap text-sm">{streamingMessage}</p>
-              <span className="animate-pulse">▊</span>
+            <div className="max-w-[85%] px-4 py-2 rounded-lg bg-gray-100 text-gray-800">
+              <p className="whitespace-pre-wrap text-sm">{streamingMessage}<span className="animate-pulse">▊</span></p>
             </div>
           </div>
         )}
@@ -121,6 +129,14 @@ export default function ConversationPanel({ onBranch }: Props) {
         >
           + 继续追问
         </button>
+        {isLoading && (
+          <button
+            onClick={handleCancel}
+            className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-lg hover:bg-red-200"
+          >
+            取消
+          </button>
+        )}
       </div>
 
       {/* Input */}
