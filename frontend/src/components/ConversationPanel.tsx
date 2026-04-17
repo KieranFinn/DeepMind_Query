@@ -5,22 +5,20 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { useStore } from '../store';
-import BigBangModal from './BigBangModal';
 import FollowUpModal from './FollowUpModal';
 
 export default function ConversationPanel() {
   const {
     isLoading, streamingMessage,
     sendUserMessage, createChildNode, cancelStreaming,
-    getActiveRegion, getActiveNode, startBigBangAnalysis,
-    activeRegionId, graph,
+    getActiveRegion, getActiveNode,
+    activeRegionId,
     followUpReady, followUpPending,
     fetchFollowUpSuggestions
   } = useStore();
 
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  const [showBigBang, setShowBigBang] = useState(false);
   const [showFollowUp, setShowFollowUp] = useState(false);
   const [showFollowUpBtn, setShowFollowUpBtn] = useState(false);  // For animation
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -34,8 +32,6 @@ export default function ConversationPanel() {
   const hasUserMsg = messages.some(m => m.role === 'user');
   const hasAssistantMsg = messages.some(m => m.role === 'assistant');
   const hasConversation = hasUserMsg && hasAssistantMsg;
-  const nodeCount = graph?.nodes.length || 0;
-  const canShowBigBang = nodeCount >= 3;
 
   // After streaming completes, trigger follow-up suggestion fetch
   useEffect(() => {
@@ -253,22 +249,6 @@ export default function ConversationPanel() {
             </div>
           )}
 
-          {/* BigBang button - only when node count >= 3 */}
-          {canShowBigBang && (
-            <button
-              onClick={async () => {
-                if (activeRegionId) {
-                  await startBigBangAnalysis(activeRegionId);
-                }
-                setShowBigBang(true);
-              }}
-              className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
-              style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--accent)', border: '1px solid var(--border)' }}
-            >
-              💥 大爆炸
-            </button>
-          )}
-
           {isLoading && (
             <button
               onClick={handleCancel}
@@ -317,7 +297,6 @@ export default function ConversationPanel() {
         </div>
       </div>
 
-      <BigBangModal isOpen={showBigBang} onClose={() => setShowBigBang(false)} />
       <FollowUpModal isOpen={showFollowUp} onClose={() => setShowFollowUp(false)} />
     </div>
   );

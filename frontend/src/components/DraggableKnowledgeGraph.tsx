@@ -448,14 +448,16 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             ↙
           </button>
           {activeRegion && (
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: activeRegion.color }}
-            />
+            <>
+              <span
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: activeRegion.color }}
+              />
+              <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                {activeRegion.name}
+              </span>
+            </>
           )}
-          <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-            图谱
-          </span>
         </div>
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
           {graph?.nodes.length || 0}

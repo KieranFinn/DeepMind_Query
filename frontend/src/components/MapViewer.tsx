@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import ReactFlow, { Node, Controls, Background, MiniMap, useNodesState, useEdgesState, BackgroundVariant } from 'reactflow';
 import 'reactflow/dist/style.css';
 import NodeCard from './NodeCard';
 import { useStore } from '../store';
+import BigBangModal from './BigBangModal';
 
 const nodeTypes = { nodeCard: NodeCard };
 
@@ -11,9 +12,11 @@ interface MapViewerProps {
 }
 
 export default function MapViewer({ onClose }: MapViewerProps) {
-  const { graph, activeNodeId, getActiveRegion, setActiveNode, createChildNode } = useStore();
+  const { graph, activeNodeId, getActiveRegion, setActiveNode, createChildNode, startBigBangAnalysis, activeRegionId } = useStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [showBigBang, setShowBigBang] = useState(false);
+  const nodeCount = graph?.nodes.length || 0;
 
   const activeRegion = getActiveRegion();
 
@@ -127,9 +130,33 @@ export default function MapViewer({ onClose }: MapViewerProps) {
               {activeRegion.name}
             </span>
             <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-              ({graph?.nodes.length || 0} 个会话)
+              ({nodeCount} 个会话)
             </span>
           </div>
+        )}
+
+        {/* BigBang button - only show when node count >= 3 */}
+        {nodeCount >= 3 && (
+          <button
+            onClick={async () => {
+              if (activeRegionId) {
+                await startBigBangAnalysis(activeRegionId);
+              }
+              setShowBigBang(true);
+            }}
+            style={{
+              marginLeft: 'auto',
+              padding: '6px 12px',
+              borderRadius: '6px',
+              border: '1px solid var(--border)',
+              backgroundColor: 'var(--bg-tertiary)',
+              color: 'var(--accent)',
+              fontSize: '12px',
+              cursor: 'pointer',
+            }}
+          >
+            💥 大爆炸
+          </button>
         )}
       </div>
 
@@ -177,6 +204,8 @@ export default function MapViewer({ onClose }: MapViewerProps) {
           </ReactFlow>
         )}
       </div>
+
+      <BigBangModal isOpen={showBigBang} onClose={() => setShowBigBang(false)} />
     </div>
   );
 }
