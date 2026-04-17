@@ -17,6 +17,8 @@ class ConversationStore:
         self.active_region_id: Optional[str] = None
         self._lock = asyncio.Lock()
         self._loaded = False
+        self._last_analysis: Optional[dict] = None
+        self._last_suggestion: Optional[dict] = None
 
     async def lock(self):
         return self._lock
