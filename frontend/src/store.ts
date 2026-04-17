@@ -38,6 +38,13 @@ interface AppState {
   bigBangAbortController: AbortController | null;
   bigBangRegionId: string | null;  // Track which region is being analyzed
 
+  // Follow-up Suggestions (AI-generated after first Q&A)
+  followUpSummary: string;
+  followUpDirections: string[];
+  followUpReady: boolean;  // true when suggestions are ready
+  followUpPending: boolean;  // true when fetching suggestions
+  followUpNodeId: string | null;  // which node the suggestions are for
+
   // Region actions
   loadRegions: () => Promise<void>;
   createRegion: (name: string, description?: string, color?: string) => Promise<void>;
@@ -65,6 +72,10 @@ interface AppState {
   startBigBangAnalysis: (regionId: string) => Promise<void>;
   cancelBigBangAnalysis: () => void;
   clearBigBangResult: () => void;
+
+  // Follow-up Actions
+  fetchFollowUpSuggestions: (regionId: string, nodeId: string) => Promise<void>;
+  clearFollowUpSuggestions: () => void;
 }
 
 function findRegion(regions: KnowledgeRegion[], regionId: string): KnowledgeRegion | null {
@@ -97,6 +108,13 @@ export const useStore = create<AppState>()(
       bigBangError: null,
       bigBangAbortController: null,
       bigBangRegionId: null,
+
+      // Follow-up initial state
+      followUpSummary: '',
+      followUpDirections: [],
+      followUpReady: false,
+      followUpPending: false,
+      followUpNodeId: null,
 
       // ============ Region Actions ============
 
@@ -487,6 +505,106 @@ export const useStore = create<AppState>()(
           isBigBangAnalyzing: false,
           bigBangAbortController: null,
           bigBangRegionId: null,
+        });
+      },
+
+      // ============ Follow-up Suggestions ============
+
+      fetchFollowUpSuggestions: async (regionId: string, nodeId: string) => {
+        const { followUpPending, followUpNodeId, followUpReady } = get();
+        // Don't refetch if already pending for same node
+        if (followUpPending && followUpNodeId === nodeId) return;
+        // Don't refetch if already have suggestions for this node
+        if (followUpReady && followUpNodeId === nodeId) return;
+
+        set({
+          followUpPending: true,
+          followUpSummary: '',
+          followUpDirections: [],
+          followUpReady: false,
+          followUpNodeId: nodeId,
+        });
+
+        try {
+          const response = await api.getFollowUpSuggestions(regionId, nodeId);
+          if (!response.ok) throw new Error('Failed to get suggestions');
+
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('No response body');
+
+          const decoder = new TextDecoder();
+          let fullContent = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') continue;
+                try {
+                  const sseEvent = JSON.parse(data);
+                  if (sseEvent.event === 'error') {
+                    const errData = JSON.parse(sseEvent.data);
+                    throw new Error(errData.error || 'Stream error');
+                  }
+                  if (sseEvent.data) {
+                    const inner = JSON.parse(sseEvent.data);
+                    if (inner.content) {
+                      fullContent += inner.content;
+                    }
+                  }
+                } catch (parseErr) {
+                  if ((parseErr as Error).message.startsWith('Stream error')) throw parseErr;
+                  try {
+                    const parsed = JSON.parse(data);
+                    const text = parsed.content || '';
+                    if (text) fullContent += text;
+                  } catch {}
+                }
+              }
+            }
+          }
+
+          // Parse the response - look for 【摘要】 and 【方向】
+          let summary = '';
+          const directions: string[] = [];
+          const lines = fullContent.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('【摘要】')) summary = line.slice(4).trim();
+            else if (line.startsWith('【方向1】')) directions[0] = line.slice(4).trim();
+            else if (line.startsWith('【方向2】')) directions[1] = line.slice(4).trim();
+          }
+
+          // Fallback: if no markers found, create generic summary
+          if (!summary && fullContent.length > 20) {
+            summary = fullContent.slice(0, 100).replace(/[#*]/g, '').trim() + '...';
+          }
+
+          set({
+            followUpSummary: summary,
+            followUpDirections: directions.filter(Boolean),
+            followUpReady: true,
+            followUpPending: false,
+          });
+        } catch (e) {
+          set({
+            followUpPending: false,
+            followUpReady: false,
+          });
+        }
+      },
+
+      clearFollowUpSuggestions: () => {
+        set({
+          followUpSummary: '',
+          followUpDirections: [],
+          followUpReady: false,
+          followUpPending: false,
+          followUpNodeId: null,
         });
       },
 

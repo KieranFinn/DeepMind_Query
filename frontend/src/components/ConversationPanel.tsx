@@ -13,23 +13,50 @@ export default function ConversationPanel() {
     isLoading, streamingMessage,
     sendUserMessage, createChildNode, cancelStreaming,
     getActiveRegion, getActiveNode, startBigBangAnalysis,
-    activeRegionId
+    activeRegionId, graph,
+    followUpReady, followUpPending,
+    fetchFollowUpSuggestions
   } = useStore();
 
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showBigBang, setShowBigBang] = useState(false);
   const [showFollowUp, setShowFollowUp] = useState(false);
+  const [showFollowUpBtn, setShowFollowUpBtn] = useState(false);  // For animation
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const wasLoading = useRef(false);
 
   const activeRegion = getActiveRegion();
   const activeNode = getActiveNode();
 
-  // Check if follow-up is available (need at least 1 user + 1 assistant message)
+  // Check message state
   const messages = activeNode?.messages || [];
   const hasUserMsg = messages.some(m => m.role === 'user');
   const hasAssistantMsg = messages.some(m => m.role === 'assistant');
-  const canFollowUp = hasUserMsg && hasAssistantMsg;
+  const hasConversation = hasUserMsg && hasAssistantMsg;
+  const nodeCount = graph?.nodes.length || 0;
+  const canShowBigBang = nodeCount >= 3;
+
+  // After streaming completes, trigger follow-up suggestion fetch
+  useEffect(() => {
+    if (wasLoading.current && !isLoading && activeNode && activeRegionId) {
+      const msgs = activeNode.messages || [];
+      const hasU = msgs.some((m: any) => m.role === 'user');
+      const hasA = msgs.some((m: any) => m.role === 'assistant');
+      if (hasU && hasA) {
+        // First Q&A completed - fetch follow-up suggestions in background
+        fetchFollowUpSuggestions(activeRegionId, String(activeNode.id));
+      }
+    }
+    wasLoading.current = isLoading;
+  }, [isLoading, activeNode, activeRegionId, fetchFollowUpSuggestions]);
+
+  // When follow-up becomes ready, trigger animation
+  useEffect(() => {
+    if (followUpReady) {
+      setShowFollowUpBtn(true);
+    }
+  }, [followUpReady]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -44,11 +71,8 @@ export default function ConversationPanel() {
       const nodeId = String(activeNode.id);
       if (link && title) {
         await createChildNode(nodeId, title);
-      } else if (link && !title) {
-        // No link - create standalone child
-        await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
       } else {
-        // No link
+        // No link - create standalone child
         await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
       }
     };
@@ -71,12 +95,12 @@ export default function ConversationPanel() {
     // Ctrl/Cmd + Enter to create branch (not for sending)
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      handleFollowUpClick();
+      if (followUpReady) handleFollowUpClick();
     }
   };
 
   const handleFollowUpClick = () => {
-    if (!canFollowUp) return;
+    if (!followUpReady) return;
     setShowFollowUp(true);
   };
 
@@ -133,7 +157,7 @@ export default function ConversationPanel() {
           </p>
         )}
 
-        {messages.map((msg, i) => (
+        {messages.map((msg: any, i: number) => (
           <div
             key={`${msg.created_at}-${i}`}
             className="message-enter flex animate-fade-in"
@@ -198,42 +222,64 @@ export default function ConversationPanel() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Actions */}
-      <div
-        className="px-4 py-2 flex gap-2 items-center"
-        style={{ borderTop: '1px solid var(--border)' }}
-      >
-        <button
-          onClick={handleFollowUpClick}
-          disabled={isLoading || !canFollowUp}
-          className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105 disabled:opacity-50"
-          style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--success)', border: '1px solid var(--border)' }}
-          title={!canFollowUp ? '需要至少一轮问答后才能使用' : '智能追问：AI总结+关键词建议'}
+      {/* Actions - only show when there are messages or streaming */}
+      {(hasConversation || isLoading || showFollowUpBtn) && (
+        <div
+          className="px-4 py-2 flex gap-2 items-center"
+          style={{ borderTop: '1px solid var(--border)' }}
         >
-          + 追问
-        </button>
-        <button
-          onClick={async () => {
-            if (activeRegionId) {
-              await startBigBangAnalysis(activeRegionId);
-            }
-            setShowBigBang(true);
-          }}
-          className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
-          style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--accent)', border: '1px solid var(--border)' }}
-        >
-          💥 大爆炸
-        </button>
-        {isLoading && (
-          <button
-            onClick={handleCancel}
-            className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
-            style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--error)', border: '1px solid var(--border)' }}
-          >
-            取消
-          </button>
-        )}
-      </div>
+          {/* Follow-up button - animated entrance */}
+          {followUpReady && (
+            <button
+              onClick={handleFollowUpClick}
+              className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
+              style={{
+                backgroundColor: 'var(--bg-hover)',
+                color: 'var(--success)',
+                border: '1px solid var(--border)',
+                animation: 'pop-in 0.3s ease-out'
+              }}
+              title="智能追问：AI总结+关键词建议"
+            >
+              + 追问
+            </button>
+          )}
+
+          {/* Follow-up loading indicator */}
+          {followUpPending && (
+            <div className="px-3 py-1.5 text-sm rounded-lg flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
+              <span className="animate-pulse">🧠</span>
+              <span className="text-xs">生成追问方向...</span>
+            </div>
+          )}
+
+          {/* BigBang button - only when node count >= 3 */}
+          {canShowBigBang && (
+            <button
+              onClick={async () => {
+                if (activeRegionId) {
+                  await startBigBangAnalysis(activeRegionId);
+                }
+                setShowBigBang(true);
+              }}
+              className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
+              style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--accent)', border: '1px solid var(--border)' }}
+            >
+              💥 大爆炸
+            </button>
+          )}
+
+          {isLoading && (
+            <button
+              onClick={handleCancel}
+              className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
+              style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--error)', border: '1px solid var(--border)' }}
+            >
+              取消
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Input */}
       <div className="p-4" style={{ borderTop: '1px solid var(--border)' }}>

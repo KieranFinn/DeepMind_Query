@@ -116,6 +116,12 @@ html {
   100% { background-position: 200% 0; }
 }
 
+@keyframes popIn {
+  0% { opacity: 0; transform: scale(0.5); }
+  70% { transform: scale(1.1); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
 .animate-fade-in {
   animation: fadeIn 0.3s ease-out forwards;
 }
@@ -130,6 +136,10 @@ html {
 
 .animate-pulse-gentle {
   animation: pulse 2s ease-in-out infinite;
+}
+
+.pop-in {
+  animation: popIn 0.3s ease-out forwards;
 }
 
 /* Message animations */
