@@ -97,3 +97,12 @@ export async function streamAnalyze(
     method: 'POST',
   });
 }
+
+export async function getFollowUpSuggestions(
+  regionId: string,
+  nodeId: string
+): Promise<Response> {
+  return fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}/suggest-branches`, {
+    method: 'POST',
+  });
+}

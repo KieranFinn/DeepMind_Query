@@ -25,7 +25,7 @@ function NodeCard({ data, selected }: NodeProps<NodeData>) {
 
   return (
     <div
-      className="px-4 py-3 rounded-lg min-w-[150px] text-center transition-all duration-200 hover:scale-105"
+      className="px-4 py-3 rounded-full min-w-[120px] text-center transition-all duration-200 hover:scale-105"
       style={{
         backgroundColor: getBgColor(),
         border: `2px solid ${getBorderColor()}`,

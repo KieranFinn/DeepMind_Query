@@ -6,6 +6,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { useStore } from '../store';
 import BigBangModal from './BigBangModal';
+import FollowUpModal from './FollowUpModal';
 
 export default function ConversationPanel() {
   const {
@@ -18,14 +19,42 @@ export default function ConversationPanel() {
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showBigBang, setShowBigBang] = useState(false);
+  const [showFollowUp, setShowFollowUp] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeRegion = getActiveRegion();
   const activeNode = getActiveNode();
 
+  // Check if follow-up is available (need at least 1 user + 1 assistant message)
+  const messages = activeNode?.messages || [];
+  const hasUserMsg = messages.some(m => m.role === 'user');
+  const hasAssistantMsg = messages.some(m => m.role === 'assistant');
+  const canFollowUp = hasUserMsg && hasAssistantMsg;
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeNode, streamingMessage]);
+
+  // Listen for follow-up creation event from FollowUpModal
+  useEffect(() => {
+    const handleFollowUpCreate = async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const { title, link } = detail;
+      if (!activeNode) return;
+      const nodeId = String(activeNode.id);
+      if (link && title) {
+        await createChildNode(nodeId, title);
+      } else if (link && !title) {
+        // No link - create standalone child
+        await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
+      } else {
+        // No link
+        await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
+      }
+    };
+    window.addEventListener('followup-create', handleFollowUpCreate);
+    return () => window.removeEventListener('followup-create', handleFollowUpCreate);
+  }, [activeNode, createChildNode]);
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || isLoading || !activeNode) return;
@@ -42,14 +71,13 @@ export default function ConversationPanel() {
     // Ctrl/Cmd + Enter to create branch (not for sending)
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      handleBranch();
+      handleFollowUpClick();
     }
   };
 
-  const handleBranch = async () => {
-    if (!activeNode) return;
-    const nodeId = String(activeNode.id);
-    await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
+  const handleFollowUpClick = () => {
+    if (!canFollowUp) return;
+    setShowFollowUp(true);
   };
 
   const handleCancel = () => {
@@ -77,8 +105,6 @@ export default function ConversationPanel() {
       </div>
     );
   }
-
-  const messages = activeNode.messages || [];
 
   return (
     <div className="flex flex-col h-full">
@@ -178,10 +204,11 @@ export default function ConversationPanel() {
         style={{ borderTop: '1px solid var(--border)' }}
       >
         <button
-          onClick={handleBranch}
-          disabled={isLoading}
+          onClick={handleFollowUpClick}
+          disabled={isLoading || !canFollowUp}
           className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105 disabled:opacity-50"
           style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--success)', border: '1px solid var(--border)' }}
+          title={!canFollowUp ? '需要至少一轮问答后才能使用' : '智能追问：AI总结+关键词建议'}
         >
           + 追问
         </button>
@@ -245,6 +272,7 @@ export default function ConversationPanel() {
       </div>
 
       <BigBangModal isOpen={showBigBang} onClose={() => setShowBigBang(false)} />
+      <FollowUpModal isOpen={showFollowUp} onClose={() => setShowFollowUp(false)} />
     </div>
   );
 }

@@ -183,6 +183,81 @@ async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str
         return {"node": child, "success": True}
 
 
+@router.post("/regions/{region_id}/graph/nodes/{node_id}/suggest-branches")
+async def suggest_branches(region_id: uuid.UUID, node_id: uuid.UUID):
+    """Generate follow-up suggestions based on conversation history"""
+    async with await store.lock():
+        node = store.get_node(str(region_id), str(node_id))
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        # Check if there's enough conversation for suggestions
+        messages = node.messages
+        has_user_msg = any(m.role == "user" for m in messages)
+        has_assistant_msg = any(m.role == "assistant" for m in messages)
+        if not has_user_msg or not has_assistant_msg:
+            raise HTTPException(status_code=400, detail="Need at least one user and assistant message")
+
+        # Build conversation context for LLM
+        conv_lines = []
+        for msg in messages:
+            role = "用户" if msg.role == "user" else "助手"
+            content = msg.content[:500].replace('\n', ' ')
+            conv_lines.append(f"[{role}]: {content}")
+
+        conversation = "\n".join(conv_lines)
+
+    system_prompt = """你是一位专业的知识探索助手。你的任务是根据对话内容，生成两个可能有价值的追问方向。
+
+请分析对话内容，找出：
+1. 用户最关心的核心问题或主题
+2. 对话中提到的但未深入探讨的相关领域
+3. 用户可能想要进一步了解的延伸方向
+
+请用中文输出，格式如下：
+- 一段50字左右的对话摘要
+- 两个可能的追问方向（每个10字以内，简洁有力）
+
+例如输出格式：
+【摘要】用户询问了机器学习中的监督学习和无监督学习的区别...
+【方向1】强化学习基础
+【方向2】神经网络原理"""
+
+    async def generate():
+        full_response = ""
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": conversation}
+            ]
+            async for chunk in stream_chat("MiniMax-M2.7", messages):
+                full_response += chunk
+                yield {"event": "message", "data": json.dumps({"content": chunk})}
+
+            # Parse the response to extract summary and directions
+            if full_response:
+                summary = ""
+                directions = []
+                for line in full_response.split('\n'):
+                    if line.startswith('【摘要】'):
+                        summary = line[4:].strip()
+                    elif line.startswith('【方向1】'):
+                        directions.append(line[4:].strip())
+                    elif line.startswith('【方向2】'):
+                        directions.append(line[4:].strip())
+
+                # Store structured result
+                store._last_suggestion = {
+                    "node_id": str(node_id),
+                    "summary": summary,
+                    "directions": directions,
+                }
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+
+    return EventSourceResponse(generate())
+
+
 # ============ LLM Analysis ============
 
 @router.post("/regions/{region_id}/analyze")
