@@ -19,6 +19,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
   const [isDocked, setIsDocked] = useState(true);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isExpanding, setIsExpanding] = useState(false);
+  const [expandOrigin, setExpandOrigin] = useState({ x: 0, y: 0 });
   const dragState = useRef<{
     isDragging: boolean;
     startMouseX: number;
@@ -183,6 +185,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     drag.isDragging = false;
     const wasDragged = drag.hasMoved;
     const shouldUndock = drag.shouldUndock;
+    const dragStartX = drag.startMouseX;
+    const dragStartY = drag.startMouseY;
 
     if (drag.element) {
       drag.element.style.cursor = 'grab';
@@ -196,6 +200,9 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         if (newX < 100 && newY > windowHeight - 300) {
           setIsDocked(true);
         } else if (shouldUndock) {
+          // Set expand origin to where user grabbed (bottom-left of docked graph)
+          setExpandOrigin({ x: dragStartX, y: dragStartY });
+          setIsExpanding(true);
           setIsDocked(false);
         }
       }
@@ -363,6 +370,37 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
   }
 
   // Floating mode
+  const floatingStyle = isExpanding ? {
+    left: expandOrigin.x - 16,
+    top: expandOrigin.y - 16,
+    width: '32px',
+    height: '32px',
+    backgroundColor: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    zIndex: 50,
+    cursor: 'grab',
+    animation: 'expandFromAnchor 0.3s ease-out forwards',
+    transformOrigin: 'top left',
+  } : {
+    left: position.x ?? SIDEBAR_WIDTH,
+    top: position.y ?? 100,
+    width: '320px',
+    height: '240px',
+    backgroundColor: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    zIndex: 50,
+    cursor: 'grab',
+  };
+
+  // After expansion animation, clear the expanding state
+  useEffect(() => {
+    if (isExpanding) {
+      const timer = setTimeout(() => setIsExpanding(false), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [isExpanding]);
+
   return (
     <div
       ref={containerRef}
@@ -375,17 +413,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         }
         containerRef.current && handleMouseDown(e, containerRef.current);
       }}
-      className="fixed rounded-xl shadow-2xl overflow-hidden"
-      style={{
-        left: position.x ?? SIDEBAR_WIDTH,
-        top: position.y ?? 100,
-        width: '320px',
-        height: '240px',
-        backgroundColor: 'var(--bg-secondary)',
-        border: '1px solid var(--border)',
-        zIndex: 50,
-        cursor: 'grab',
-      }}
+      className={`fixed rounded-xl shadow-2xl overflow-hidden ${isExpanding ? '' : ''}`}
+      style={floatingStyle}
     >
       {/* Header */}
       <div
