@@ -11,7 +11,8 @@ export default function ConversationPanel() {
   const {
     isLoading, streamingMessage,
     sendUserMessage, createChildNode, cancelStreaming,
-    getActiveRegion, getActiveNode
+    getActiveRegion, getActiveNode, startBigBangAnalysis,
+    activeRegionId
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -185,7 +186,12 @@ export default function ConversationPanel() {
           + 追问
         </button>
         <button
-          onClick={() => setShowBigBang(true)}
+          onClick={async () => {
+            if (activeRegionId) {
+              await startBigBangAnalysis(activeRegionId);
+            }
+            setShowBigBang(true);
+          }}
           className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
           style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--accent)', border: '1px solid var(--border)' }}
         >

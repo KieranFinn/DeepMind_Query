@@ -30,6 +30,14 @@ interface AppState {
   abortController: AbortController | null;
   isHydrated: boolean;
 
+  // BigBang Analysis State (background-capable)
+  isBigBangAnalyzing: boolean;
+  bigBangProgress: string;
+  bigBangResult: string;
+  bigBangError: string | null;
+  bigBangAbortController: AbortController | null;
+  bigBangRegionId: string | null;  // Track which region is being analyzed
+
   // Region actions
   loadRegions: () => Promise<void>;
   createRegion: (name: string, description?: string, color?: string) => Promise<void>;
@@ -52,6 +60,11 @@ interface AppState {
   clearError: (id?: string) => void;
   getActiveRegion: () => KnowledgeRegion | null;
   getActiveNode: () => Node | null;
+
+  // BigBang Actions (background-capable analysis)
+  startBigBangAnalysis: (regionId: string) => Promise<void>;
+  cancelBigBangAnalysis: () => void;
+  clearBigBangResult: () => void;
 }
 
 function findRegion(regions: KnowledgeRegion[], regionId: string): KnowledgeRegion | null {
@@ -76,6 +89,14 @@ export const useStore = create<AppState>()(
       selectedModel: MODELS[0].id,
       abortController: null,
       isHydrated: false,
+
+      // BigBang initial state
+      isBigBangAnalyzing: false,
+      bigBangProgress: '',
+      bigBangResult: '',
+      bigBangError: null,
+      bigBangAbortController: null,
+      bigBangRegionId: null,
 
       // ============ Region Actions ============
 
@@ -227,7 +248,7 @@ export const useStore = create<AppState>()(
       },
 
       deleteNode: async (regionId, nodeId) => {
-        const { activeRegionId, activeNodeId } = get();
+        const { activeNodeId } = get();
         set(state => ({ ...state, isLoading: true, errorQueue: [] }));
         try {
           await api.deleteNode(regionId, nodeId);
@@ -359,6 +380,114 @@ export const useStore = create<AppState>()(
         const { abortController } = get();
         if (abortController) abortController.abort();
         set({ isLoading: false, streamingMessage: '', abortController: null });
+      },
+
+      // ============ BigBang Analysis (Background-capable) ============
+
+      startBigBangAnalysis: async (regionId: string) => {
+        const { bigBangAbortController } = get();
+        if (bigBangAbortController) bigBangAbortController.abort();
+
+        const controller = new AbortController();
+        set({
+          isBigBangAnalyzing: true,
+          bigBangProgress: '',
+          bigBangResult: '',
+          bigBangError: null,
+          bigBangAbortController: controller,
+          bigBangRegionId: regionId,
+        });
+
+        try {
+          const response = await api.streamAnalyze(regionId);
+          if (!response.ok) throw new Error('Analysis failed');
+
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('No response body');
+
+          const decoder = new TextDecoder();
+          let fullContent = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (controller.signal.aborted) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') continue;
+                try {
+                  const sseEvent = JSON.parse(data);
+                  if (sseEvent.event === 'error') {
+                    const errData = JSON.parse(sseEvent.data);
+                    throw new Error(errData.error || 'Stream error');
+                  }
+                  if (sseEvent.data) {
+                    const inner = JSON.parse(sseEvent.data);
+                    if (inner.content) {
+                      fullContent += inner.content;
+                      set({ bigBangProgress: fullContent });
+                    }
+                  }
+                } catch (parseErr) {
+                  if ((parseErr as Error).message.startsWith('Stream error')) throw parseErr;
+                  try {
+                    const parsed = JSON.parse(data);
+                    const text = parsed.content || '';
+                    if (text) {
+                      fullContent += text;
+                      set({ bigBangProgress: fullContent });
+                    }
+                  } catch {}
+                }
+              }
+            }
+          }
+
+          if (!controller.signal.aborted) {
+            set({
+              bigBangResult: fullContent,
+              bigBangProgress: '',
+              isBigBangAnalyzing: false,
+            });
+          }
+        } catch (e) {
+          if ((e as Error).name !== 'AbortError') {
+            set({
+              bigBangError: (e as Error).message,
+              isBigBangAnalyzing: false,
+              bigBangProgress: '',
+            });
+          }
+        } finally {
+          if (!controller.signal.aborted) {
+            set({ bigBangAbortController: null });
+          }
+        }
+      },
+
+      cancelBigBangAnalysis: () => {
+        const { bigBangAbortController } = get();
+        if (bigBangAbortController) bigBangAbortController.abort();
+        set({
+          isBigBangAnalyzing: false,
+          bigBangProgress: '',
+          bigBangAbortController: null,
+        });
+      },
+
+      clearBigBangResult: () => {
+        set({
+          bigBangResult: '',
+          bigBangProgress: '',
+          bigBangError: null,
+          isBigBangAnalyzing: false,
+          bigBangAbortController: null,
+          bigBangRegionId: null,
+        });
       },
 
       // ============ Utils ============

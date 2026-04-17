@@ -12,7 +12,7 @@ interface DraggableKnowledgeGraphProps {
 }
 
 export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableKnowledgeGraphProps) {
-  const { graph, activeNodeId, getActiveRegion, createChildNode, setActiveNode } = useStore();
+  const { graph, activeNodeId, getActiveRegion, createChildNode, setActiveNode, isBigBangAnalyzing, bigBangResult, bigBangRegionId, activeRegionId } = useStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
@@ -224,6 +224,10 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     const collapsedX = isDocked ? 0 : position.x;
     const collapsedY = isDocked ? window.innerHeight - 52 : position.y;
 
+    // Determine BigBang status for this region
+    const bigBangActive = isBigBangAnalyzing && bigBangRegionId === activeRegionId;
+    const bigBangDone = !!bigBangResult && bigBangRegionId === activeRegionId;
+
     return (
       <div
         ref={containerRef}
@@ -251,13 +255,19 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           zIndex: 61,
           cursor: 'grab',
         }}
-        title="展开知识图谱"
+        title={bigBangActive ? '大爆炸分析中...' : bigBangDone ? '大爆炸分析完成，点击查看' : '展开知识图谱'}
       >
-        {activeRegion && (
+        {bigBangActive ? (
+          <span className="text-sm animate-pulse">💥</span>
+        ) : bigBangDone ? (
+          <span className="text-sm">💥</span>
+        ) : activeRegion ? (
           <span
             className="w-3 h-3 rounded-full"
             style={{ backgroundColor: activeRegion.color }}
           />
+        ) : (
+          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--border)' }} />
         )}
       </div>
     );
