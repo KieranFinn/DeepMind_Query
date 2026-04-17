@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Graph, Node } from '../types';
 import { useStore } from '../store';
+import { streamAnalyze } from '../api';
 
 interface BigBangModalProps {
   isOpen: boolean;
@@ -143,20 +144,71 @@ function analyzeGraph(graph: Graph | null): AnalysisResult | null {
 }
 
 export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
-  const { graph } = useStore();
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const { graph, activeRegionId } = useStore();
+  const [llmContent, setLlmContent] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   useEffect(() => {
-    if (isOpen && graph) {
+    if (isOpen && graph && activeRegionId) {
       setIsAnalyzing(true);
-      setTimeout(() => {
-        const analysis = analyzeGraph(graph);
-        setResult(analysis);
-        setIsAnalyzing(false);
-      }, 1500);
+      setLlmContent('');
+
+      // Use LLM streaming analysis
+      streamAnalyze(activeRegionId)
+        .then(response => {
+          if (!response.ok) throw new Error('Analysis failed');
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('No response body');
+          const decoder = new TextDecoder();
+          let fullContent = '';
+
+          const processStream = () => {
+            reader.read().then(({ done, value }) => {
+              if (done) {
+                setIsAnalyzing(false);
+                return;
+              }
+              const chunk = decoder.decode(value, { stream: true });
+              const lines = chunk.split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const data = line.slice(6).trim();
+                  if (data === '[DONE]') {
+                    setIsAnalyzing(false);
+                    return;
+                  }
+                  try {
+                    const event = JSON.parse(data);
+                    if (event.event === 'error') {
+                      const errData = JSON.parse(event.data);
+                      throw new Error(errData.error || 'Stream error');
+                    }
+                    if (event.data) {
+                      const inner = JSON.parse(event.data);
+                      if (inner.content) {
+                        fullContent += inner.content;
+                        setLlmContent(fullContent);
+                      }
+                    }
+                  } catch (e) {
+                    if ((e as Error).message.startsWith('Stream error')) {
+                      setIsAnalyzing(false);
+                      return;
+                    }
+                  }
+                }
+              }
+              processStream();
+            });
+          };
+          processStream();
+        })
+        .catch(e => {
+          console.error('Analysis error:', e);
+          setIsAnalyzing(false);
+        });
     }
-  }, [isOpen, graph]);
+  }, [isOpen, graph, activeRegionId]);
 
   if (!isOpen) return null;
 
@@ -198,135 +250,31 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
           </div>
         )}
 
-        {result && !isAnalyzing && (
-          <div className="space-y-8">
-            {/* Thinking Pattern - Hero */}
-            <div className="text-center py-6 rounded-xl" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-              <p className="text-sm mb-2" style={{ color: 'var(--text-muted)' }}>你的思维模式</p>
-              <p className="text-2xl font-bold" style={{ color: 'var(--accent)' }}>
-                {result.thinkingPattern}
-              </p>
+        {(llmContent || isAnalyzing) && (
+          <div className="space-y-4">
+            <div
+              className="p-4 rounded-xl prose prose-sm max-w-none"
+              style={{
+                backgroundColor: 'var(--bg-tertiary)',
+                color: 'var(--text-primary)',
+                fontSize: '13px',
+                lineHeight: '1.7'
+              }}
+            >
+              {llmContent ? (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                >
+                  {llmContent}
+                </ReactMarkdown>
+              ) : (
+                <div className="flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
+                  <span className="animate-pulse">🔮</span>
+                  <span>正在深度分析中...</span>
+                </div>
+              )}
             </div>
-
-            {/* Stats Grid */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 rounded-xl" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>完整度</p>
-                <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold" style={{ color: result.completeness > 50 ? 'var(--success)' : 'var(--error)' }}>
-                    {result.completeness}%
-                  </span>
-                </div>
-                <div className="mt-2 h-1 rounded-full" style={{ backgroundColor: 'var(--border)' }}>
-                  <div
-                    className="h-1 rounded-full transition-all"
-                    style={{
-                      width: `${result.completeness}%`,
-                      backgroundColor: result.completeness > 50 ? 'var(--success)' : 'var(--error)'
-                    }}
-                  />
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>深度</p>
-                <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold" style={{ color: result.depth > 50 ? 'var(--success)' : 'var(--error)' }}>
-                    {result.depth}%
-                  </span>
-                </div>
-                <div className="mt-2 h-1 rounded-full" style={{ backgroundColor: 'var(--border)' }}>
-                  <div
-                    className="h-1 rounded-full transition-all"
-                    style={{
-                      width: `${result.depth}%`,
-                      backgroundColor: result.depth > 50 ? 'var(--success)' : 'var(--error)'
-                    }}
-                  />
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>广度</p>
-                <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold" style={{ color: result.breadth > 50 ? 'var(--success)' : 'var(--error)' }}>
-                    {result.breadth}%
-                  </span>
-                </div>
-                <div className="mt-2 h-1 rounded-full" style={{ backgroundColor: 'var(--border)' }}>
-                  <div
-                    className="h-1 rounded-full transition-all"
-                    style={{
-                      width: `${result.breadth}%`,
-                      backgroundColor: result.breadth > 50 ? 'var(--success)' : 'var(--error)'
-                    }}
-                  />
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>平均分支数</p>
-                <span className="text-3xl font-bold" style={{ color: 'var(--accent)' }}>
-                  {result.avgBranchFactor}
-                </span>
-                <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                  每个节点平均子分支数
-                </p>
-              </div>
-            </div>
-
-            {/* Basic stats */}
-            <div className="grid grid-cols-3 gap-2 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-              <div className="p-2 rounded" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                会话数: <strong style={{ color: 'var(--text-primary)' }}>{result.totalNodes}</strong>
-              </div>
-              <div className="p-2 rounded" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                最大深度: <strong style={{ color: 'var(--text-primary)' }}>{result.maxDepth}</strong>
-              </div>
-              <div className="p-2 rounded" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
-                消息数: <strong style={{ color: 'var(--text-primary)' }}>{result.totalMessages}</strong>
-              </div>
-            </div>
-
-            {/* Critique */}
-            {result.critique.length > 0 && (
-              <div>
-                <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-                  🧠 思维模式批判
-                </h3>
-                <div className="space-y-2">
-                  {result.critique.map((c, i) => (
-                    <div
-                      key={i}
-                      className="p-3 rounded-lg text-sm animate-fade-in"
-                      style={{ backgroundColor: 'var(--error)', color: '#fff', opacity: 0.9 }}
-                    >
-                      {c}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Suggestions */}
-            {result.suggestions.length > 0 && (
-              <div>
-                <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>
-                  💡 补全建议
-                </h3>
-                <div className="space-y-2">
-                  {result.suggestions.map((s, i) => (
-                    <div
-                      key={i}
-                      className="p-3 rounded-lg text-sm animate-fade-in"
-                      style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
-                    >
-                      {s}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* Action */}
             <button
@@ -339,7 +287,23 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
           </div>
         )}
 
-        {!result && !isAnalyzing && (
+        {!llmContent && !isAnalyzing && graph && graph.nodes.length > 0 && (
+          <div className="text-center py-12">
+            <div className="text-4xl mb-4">🌌</div>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              点击上方按钮开始深度分析
+            </p>
+            <button
+              onClick={onClose}
+              className="mt-4 px-6 py-2 rounded-xl font-medium"
+              style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-primary)' }}
+            >
+              关闭
+            </button>
+          </div>
+        )}
+
+        {!llmContent && !isAnalyzing && (!graph || graph.nodes.length === 0) && (
           <div className="text-center py-12">
             <div className="text-4xl mb-4">🌌</div>
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>

@@ -183,6 +183,121 @@ async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str
         return {"node": child, "success": True}
 
 
+# ============ LLM Analysis ============
+
+@router.post("/regions/{region_id}/analyze")
+async def analyze_region(region_id: uuid.UUID):
+    """Deep LLM analysis of the knowledge graph"""
+    async with await store.lock():
+        region = store.get_region(str(region_id))
+        if not region:
+            raise HTTPException(status_code=404, detail="Region not found")
+
+        # Build comprehensive context for LLM
+        graph = region.graph
+        context_lines = [
+            f"# 知识区分析报告：{region.name}",
+            f"共 {len(graph.nodes)} 个会话，{len(graph.edges)} 条关联",
+            "",
+            "## 知识结构",
+        ]
+
+        # Build parent->children map from edges
+        children_map: dict[str, list[str]] = {}
+        for edge in graph.edges:
+            src, tgt = str(edge.source), str(edge.target)
+            if src not in children_map:
+                children_map[src] = []
+            children_map[src].append(tgt)
+
+        # Find root nodes
+        all_targets = {str(e.target) for e in graph.edges}
+        roots = [n for n in graph.nodes if str(n.id) not in all_targets]
+
+        # Build tree representation with content
+        def describe_node(node_id: str, depth: int = 0) -> list[str]:
+            node = next((n for n in graph.nodes if str(n.id) == node_id), None)
+            if not node:
+                return []
+            indent = "  " * depth
+            lines = [f"{indent}- **{node.title}** ({len(node.messages)} 条消息)"]
+            if node.messages:
+                # Show last message summary
+                last_msg = node.messages[-1]
+                preview = last_msg.content[:100].replace('\n', ' ')
+                lines.append(f"{indent}  最新: {preview}...")
+            for child_id in children_map.get(node_id, []):
+                lines.extend(describe_node(child_id, depth + 1))
+            return lines
+
+        for root in roots:
+            context_lines.extend(describe_node(str(root.id), 0))
+
+        # Conversation content summary
+        context_lines.append("")
+        context_lines.append("## 对话内容摘要")
+        for node in graph.nodes:
+            if node.messages:
+                context_lines.append(f"\n### {node.title}")
+                for msg in node.messages[-3:]:  # Last 3 messages per node
+                    role = "用户" if msg.role == "user" else "助手"
+                    content = msg.content[:300].replace('\n', ' ')
+                    context_lines.append(f"[{role}]: {content}")
+
+        context = "\n".join(context_lines)
+
+    system_prompt = """你是一位专业的知识管理顾问和思维模式分析师。你的任务是对用户的知识图谱进行深度分析。
+
+请从以下几个维度进行深度分析：
+
+1. **知识结构诊断**
+   - 分析会话之间的关联是否合理
+   - 识别主题的深浅分布
+   - 发现知识网络的结构性问题
+
+2. **学习模式识别**
+   - 判断用户是习惯深度钻研还是广泛探索
+   - 分析追问的层次和深度
+   - 识别用户的思维习惯
+
+3. **认知盲区发现**
+   - 找出用户从未触及的相关领域
+   - 识别理解不完整的概念
+   - 发现论证链条的薄弱环节
+
+4. **个性化建议**
+   - 针对具体内容给出下一步探索方向
+   - 提供补全知识网络的具体问题建议
+   - 给出深化理解的具体路径
+
+请用中文输出，分析要深入、具体、有见地，不要泛泛而谈。"""
+
+    async def generate():
+        full_response = ""
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context}
+            ]
+            async for chunk in stream_chat("MiniMax-M2.7", messages):
+                full_response += chunk
+                yield {"event": "message", "data": json.dumps({"content": chunk})}
+
+            # Store analysis result
+            if full_response:
+                async with await store.lock():
+                    # Store the last analysis in memory (could be extended to DB)
+                    store._last_analysis = {
+                        "region_id": str(region_id),
+                        "content": full_response,
+                        "timestamp": str(region_id)  # simplified
+                    }
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+
+    return EventSourceResponse(generate())
+
+
 # ============ Health Check ============
 
 @router.get("/")

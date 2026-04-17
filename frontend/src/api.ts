@@ -89,3 +89,11 @@ export async function streamMessage(
     body: JSON.stringify({ content, model }),
   });
 }
+
+export async function streamAnalyze(
+  regionId: string
+): Promise<Response> {
+  return fetch(`${API_BASE}/regions/${regionId}/analyze`, {
+    method: 'POST',
+  });
+}

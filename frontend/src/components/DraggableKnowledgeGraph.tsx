@@ -248,7 +248,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           height: '32px',
           backgroundColor: 'var(--bg-tertiary)',
           border: '2px solid var(--accent)',
-          zIndex: 50,
+          zIndex: 61,
           cursor: 'grab',
         }}
         title="展开知识图谱"
@@ -291,7 +291,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           backgroundColor: 'var(--bg-secondary)',
           borderTop: '1px solid var(--border)',
           borderRight: '1px solid var(--border)',
-          zIndex: 40,
+          zIndex: 60,
           cursor: 'grab',
         }}
       >
@@ -356,7 +356,15 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
   return (
     <div
       ref={containerRef}
-      onMouseDown={(e) => containerRef.current && handleMouseDown(e, containerRef.current)}
+      onMouseDown={(e) => {
+        // Don't start window drag if clicking on ReactFlow nodes or controls
+        if ((e.target as HTMLElement).closest('.react-flow__node') ||
+            (e.target as HTMLElement).closest('.react-flow__controls') ||
+            (e.target as HTMLElement).closest('.react-flow__minimap')) {
+          return;
+        }
+        containerRef.current && handleMouseDown(e, containerRef.current);
+      }}
       className="fixed rounded-xl shadow-2xl overflow-hidden"
       style={{
         left: position.x ?? SIDEBAR_WIDTH,
