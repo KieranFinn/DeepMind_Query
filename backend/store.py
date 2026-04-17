@@ -254,14 +254,41 @@ class ConversationStore:
         if region_id not in self.regions:
             return False
 
-        with get_cursor() as cursor:
-            cursor.execute("DELETE FROM nodes WHERE id = %s", (node_id,))
+        graph = self.regions[region_id].graph
 
+        # Find all descendant node IDs using BFS (cascade delete)
+        to_delete = {node_id}
+        queue = [node_id]
+        while queue:
+            current = queue.pop(0)
+            # Find all children of current node
+            for edge in graph.edges:
+                if str(edge.source) == current and str(edge.target) not in to_delete:
+                    to_delete.add(str(edge.target))
+                    queue.append(str(edge.target))
+
+        # Delete from database - need to delete in correct order (children before parents)
+        # Due to FK constraints, delete edges first, then nodes
+        with get_cursor() as cursor:
+            # Delete edges involving any node in to_delete
+            placeholders = ','.join(['%s'] * len(to_delete))
+            cursor.execute(
+                f"DELETE FROM edges WHERE source IN ({placeholders}) OR target IN ({placeholders})",
+                (*to_delete, *to_delete)
+            )
+            # Delete nodes
+            cursor.execute(
+                f"DELETE FROM nodes WHERE id IN ({placeholders})",
+                tuple(to_delete)
+            )
+
+        # Update in-memory graph
         self.regions[region_id].graph.nodes = [
-            n for n in self.regions[region_id].graph.nodes if str(n.id) != node_id
+            n for n in self.regions[region_id].graph.nodes if str(n.id) not in to_delete
         ]
         self.regions[region_id].graph.edges = [
-            e for e in self.regions[region_id].graph.edges if str(e.source) != node_id and str(e.target) != node_id
+            e for e in self.regions[region_id].graph.edges
+            if str(e.source) not in to_delete and str(e.target) not in to_delete
         ]
         return True
 
