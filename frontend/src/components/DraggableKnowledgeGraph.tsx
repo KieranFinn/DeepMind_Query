@@ -43,7 +43,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
 
   const activeRegion = getActiveRegion();
   const SIDEBAR_WIDTH = sidebarCollapsed ? 32 : 280;
-  const DOCKED_HEIGHT = 160;
+  const DOCKED_HEIGHT = 120;  // Reduced to leave space for model selector
 
   // Hide ReactFlow attribution
   useEffect(() => {
