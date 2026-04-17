@@ -19,6 +19,11 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
   const hasResult = !!bigBangResult;
   const hasError = !!bigBangError;
   const isActive = isBigBangAnalyzing && activeRegionId === bigBangRegionId;
+  // Only show result/error/progress if it's for the current region
+  const isForCurrentRegion = bigBangRegionId === activeRegionId;
+  const showResult = isForCurrentRegion && hasResult;
+  const showProgress = isForCurrentRegion && bigBangProgress;
+  const showError = isForCurrentRegion && hasError;
 
   return (
     <div
@@ -60,7 +65,7 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
         )}
 
         {/* Streaming content */}
-        {(bigBangProgress || hasResult) && (
+        {(showProgress || showResult) && (
           <div className="space-y-4">
             <div
               className="p-4 rounded-xl prose prose-sm max-w-none"
@@ -71,12 +76,12 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
                 lineHeight: '1.7'
               }}
             >
-              {bigBangProgress && !hasResult ? (
+              {showProgress && !showResult ? (
                 <div className="flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
                   <span className="animate-pulse">🔮</span>
                   <span>正在深度分析中...</span>
                 </div>
-              ) : bigBangResult ? (
+              ) : showResult ? (
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkMath]}
                   rehypePlugins={[rehypeKatex, rehypeHighlight]}
@@ -98,7 +103,7 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
         )}
 
         {/* Error state */}
-        {hasError && (
+        {showError && (
           <div className="text-center py-12">
             <div className="text-4xl mb-4">❌</div>
             <p className="text-sm" style={{ color: 'var(--error)' }}>

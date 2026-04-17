@@ -1,6 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useStore } from '../store';
-import { getFollowUpSuggestions } from '../api';
 
 interface FollowUpModalProps {
   isOpen: boolean;
@@ -8,150 +7,43 @@ interface FollowUpModalProps {
 }
 
 export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
-  const { activeRegionId, activeNodeId } = useStore();
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [summary, setSummary] = useState('');
+  const { activeRegionId, activeNodeId, followUpSummary, followUpDirections, followUpPending } = useStore();
   const [customInput, setCustomInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [streamedContent, setStreamedContent] = useState('');
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirmText, setConfirmText] = useState('');
 
-  useEffect(() => {
-    if (isOpen && activeRegionId && activeNodeId) {
-      setIsLoading(true);
-      setStreamedContent('');
-      setSuggestions([]);
-      setSummary('');
-      setCustomInput('');
-      setShowConfirm(false);
-
-      getFollowUpSuggestions(activeRegionId, activeNodeId)
-        .then(response => {
-          if (!response.ok) throw new Error('Failed to get suggestions');
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('No response body');
-          const decoder = new TextDecoder();
-
-          const processStream = () => {
-            reader.read().then(({ done, value }) => {
-              if (done) {
-                setIsLoading(false);
-                // Parse accumulated content
-                parseContent(streamedContent);
-                return;
-              }
-              const chunk = decoder.decode(value, { stream: true });
-              setStreamedContent(prev => {
-                const newContent = prev + chunk;
-                // Try to parse incrementally
-                parseContent(newContent);
-                return newContent;
-              });
-              processStream();
-            });
-          };
-          processStream();
-        })
-        .catch(e => {
-          console.error('Suggest error:', e);
-          setIsLoading(false);
-        });
-    }
-  }, [isOpen, activeRegionId, activeNodeId]);
-
-  const parseContent = (content: string) => {
-    // Parse the SSE-like content
-    const lines = content.split('\n');
-    let fullText = '';
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') continue;
-          const event = JSON.parse(data);
-          if (event.data) {
-            const inner = JSON.parse(event.data);
-            if (inner.content) {
-              fullText += inner.content;
-            }
-          }
-        } catch {}
-      }
-    }
-  };
-
-  // Separate effect to parse streamed content
-  useEffect(() => {
-    if (!streamedContent) return;
-
-    // Simple parsing: look for 【摘要】 and 【方向】 markers
-    let summaryText = '';
-    let dirs: string[] = [];
-
-    const textToParse = streamedContent;
-    const lines = textToParse.split('\n');
-    for (const line of lines) {
-      if (line.startsWith('【摘要】')) {
-        summaryText = line.slice(4).trim();
-      } else if (line.startsWith('【方向1】')) {
-        dirs[0] = line.slice(4).trim();
-      } else if (line.startsWith('【方向2】')) {
-        dirs[1] = line.slice(4).trim();
-      }
-    }
-
-    // Also try to extract from accumulated content without markers
-    if (!summaryText && streamedContent.length > 50) {
-      // Just use the first meaningful chunk as summary
-      const cleaned = streamedContent.replace(/data:\s*/g, '').replace(/\{[^}]*\}/g, '');
-      if (cleaned.length > 20) {
-        summaryText = cleaned.slice(0, 100) + '...';
-      }
-    }
-
-    setSummary(summaryText);
-    setSuggestions(dirs.filter(Boolean));
-  }, [streamedContent]);
+  const isLoading = followUpPending;
+  const summary = followUpSummary;
+  const suggestions = followUpDirections;
 
   if (!isOpen) return null;
 
   const handleSelectDirection = (direction: string) => {
-    // User selected AI suggestion - auto-link and create child
     if (activeRegionId && activeNodeId) {
-      createChildWithLink(direction);
+      onClose();
+      window.dispatchEvent(new CustomEvent('followup-create', {
+        detail: { title: direction, link: true }
+      }));
     }
   };
 
   const handleCustomSubmit = () => {
     if (!customInput.trim()) return;
-    // Show confirmation
     setConfirmText(customInput.trim());
     setShowConfirm(true);
   };
 
-  const createChildWithLink = async (title: string) => {
-    // This will be handled by parent - just close and let parent do the creation
+  const handleConfirmNoLink = () => {
     onClose();
-    // Parent should call createChildNode after modal closes
     window.dispatchEvent(new CustomEvent('followup-create', {
-      detail: { title, link: true }
+      detail: { title: confirmText, link: true }
     }));
   };
 
   const handleNoLink = () => {
-    // Create child without linking
     onClose();
     window.dispatchEvent(new CustomEvent('followup-create', {
       detail: { title: '', link: false }
-    }));
-  };
-
-  const handleConfirmNoLink = () => {
-    // Create with the custom input but confirmed
-    onClose();
-    window.dispatchEvent(new CustomEvent('followup-create', {
-      detail: { title: confirmText, link: true }
     }));
   };
 
