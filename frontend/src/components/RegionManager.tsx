@@ -19,7 +19,7 @@ export default function RegionManager({ collapsed, onToggleCollapse }: RegionMan
   const {
     regions, activeRegionId, activeNodeId,
     createRegion, deleteRegion, updateRegion, setActiveRegion,
-    setActiveNode, createNode,
+    setActiveNode, createNode, deleteNode,
     selectedModel, setModel
   } = useStore();
 
@@ -29,6 +29,7 @@ export default function RegionManager({ collapsed, onToggleCollapse }: RegionMan
   const [editingName, setEditingName] = useState('');
   const [deleteConfirmRegionId, setDeleteConfirmRegionId] = useState<string | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [deleteConfirmNodeId, setDeleteConfirmNodeId] = useState<string | null>(null);
 
   const activeRegion = regions.find(r => r.id === activeRegionId);
 
@@ -310,6 +311,53 @@ export default function RegionManager({ collapsed, onToggleCollapse }: RegionMan
         );
       })()}
 
+      {/* Delete Node Confirmation Dialog */}
+      {deleteConfirmNodeId && activeRegion && (() => {
+        const nodeToDelete = activeRegion.graph.nodes.find(n => String(n.id) === deleteConfirmNodeId);
+        if (!nodeToDelete) return null;
+        return (
+          <div
+            className="fixed inset-0 flex items-center justify-center z-50"
+            style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+            onClick={() => setDeleteConfirmNodeId(null)}
+          >
+            <div
+              className="rounded-xl p-4 w-80 shadow-2xl"
+              style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                确认删除会话
+              </h3>
+              <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                删除后无法恢复。确定要删除「{nodeToDelete.title}」吗？
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setDeleteConfirmNodeId(null)}
+                  className="px-3 py-1.5 text-xs rounded"
+                  style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-secondary)' }}
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => {
+                    if (activeRegionId && deleteConfirmNodeId) {
+                      deleteNode(activeRegionId, deleteConfirmNodeId);
+                      setDeleteConfirmNodeId(null);
+                    }
+                  }}
+                  className="px-3 py-1.5 text-xs rounded"
+                  style={{ backgroundColor: 'var(--error)', color: '#fff' }}
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Nodes List (in active region) */}
       {activeRegion && (
         <div className="flex-1 p-2 overflow-y-auto" style={{ borderTop: '1px solid var(--border)' }}>
@@ -333,22 +381,37 @@ export default function RegionManager({ collapsed, onToggleCollapse }: RegionMan
           <div className="space-y-1">
             {activeRegion.graph.nodes.map(node => {
               const nodeIdStr = String(node.id);
+              const isActive = nodeIdStr === activeNodeId;
               return (
-                <button
+                <div
                   key={node.id}
-                  onClick={() => setActiveNode(nodeIdStr)}
-                  className="w-full text-left px-2 py-2 rounded text-sm transition-all"
-                  style={{
-                    backgroundColor: nodeIdStr === activeNodeId ? 'var(--bg-tertiary)' : 'transparent',
-                    color: nodeIdStr === activeNodeId ? 'var(--text-primary)' : 'var(--text-secondary)',
-                    borderLeft: nodeIdStr === activeNodeId ? `2px solid ${activeRegion.color}` : '2px solid transparent'
-                  }}
+                  className="flex items-center gap-1"
                 >
-                  <div className="truncate">{node.title}</div>
-                  <div className="text-xs opacity-50">
-                    {node.messages.length} 条消息
-                  </div>
-                </button>
+                  <button
+                    onClick={() => setActiveNode(nodeIdStr)}
+                    className="flex-1 text-left px-2 py-2 rounded text-sm transition-all"
+                    style={{
+                      backgroundColor: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                      color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      borderLeft: isActive ? `2px solid ${activeRegion.color}` : '2px solid transparent'
+                    }}
+                  >
+                    <div className="truncate">{node.title}</div>
+                    <div className="text-xs opacity-50">
+                      {node.messages.length} 条消息
+                    </div>
+                  </button>
+                  {activeRegion.graph.nodes.length > 1 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDeleteConfirmNodeId(nodeIdStr); }}
+                      className="text-xs px-1.5 py-1 opacity-50 hover:opacity-100"
+                      style={{ color: 'var(--error)' }}
+                      title="删除会话"
+                    >
+                      🗑️
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>

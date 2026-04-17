@@ -41,6 +41,7 @@ interface AppState {
   loadGraph: () => Promise<void>;
   setActiveNode: (nodeId: string) => Promise<void>;
   createNode: (title?: string, parentId?: string) => Promise<void>;
+  deleteNode: (regionId: string, nodeId: string) => Promise<void>;
   sendUserMessage: (content: string) => Promise<void>;
   createChildNode: (parentId: string, title?: string) => Promise<void>;
   cancelStreaming: () => void;
@@ -219,6 +220,23 @@ export const useStore = create<AppState>()(
           const result = await api.createNode(activeRegionId, title, parentId);
           await get().loadGraph();
           set({ activeNodeId: result.node.id });
+        } catch (e) {
+          get().addError((e as Error).message);
+          set({ isLoading: false });
+        }
+      },
+
+      deleteNode: async (regionId, nodeId) => {
+        const { activeRegionId, activeNodeId } = get();
+        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
+        try {
+          await api.deleteNode(regionId, nodeId);
+          await get().loadGraph();
+          // If deleted node was active, select first available node
+          if (activeNodeId === nodeId) {
+            const { graph } = get();
+            set({ activeNodeId: graph?.nodes[0]?.id || null });
+          }
         } catch (e) {
           get().addError((e as Error).message);
           set({ isLoading: false });

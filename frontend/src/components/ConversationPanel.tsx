@@ -5,6 +5,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { useStore } from '../store';
+import BigBangModal from './BigBangModal';
 
 export default function ConversationPanel() {
   const {
@@ -15,6 +16,7 @@ export default function ConversationPanel() {
 
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [showBigBang, setShowBigBang] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeRegion = getActiveRegion();
@@ -182,6 +184,13 @@ export default function ConversationPanel() {
         >
           + 追问
         </button>
+        <button
+          onClick={() => setShowBigBang(true)}
+          className="px-3 py-1.5 text-sm rounded-lg transition-all hover:scale-105"
+          style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--accent)', border: '1px solid var(--border)' }}
+        >
+          💥 大爆炸
+        </button>
         {isLoading && (
           <button
             onClick={handleCancel}
@@ -228,6 +237,8 @@ export default function ConversationPanel() {
           </button>
         </div>
       </div>
+
+      <BigBangModal isOpen={showBigBang} onClose={() => setShowBigBang(false)} />
     </div>
   );
 }
