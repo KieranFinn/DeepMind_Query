@@ -43,7 +43,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
 
   const activeRegion = getActiveRegion();
   const SIDEBAR_WIDTH = sidebarCollapsed ? 32 : 280;
-  const DOCKED_HEIGHT = 120;  // Reduced to leave space for model selector
+  const DOCKED_HEIGHT = 160;
 
   // Hide ReactFlow attribution
   useEffect(() => {
@@ -295,7 +295,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         className="fixed rounded-t-xl overflow-hidden shadow-lg"
         style={{
           left: 0,
-          bottom: 0,
+          bottom: '50px',
           width: '280px',
           height: `${DOCKED_HEIGHT}px`,
           backgroundColor: 'var(--bg-secondary)',
