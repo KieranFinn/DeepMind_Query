@@ -239,6 +239,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       <div
         ref={containerRef}
         onMouseDown={(e) => {
+          e.stopPropagation();
           if (containerRef.current) {
             const el = containerRef.current;
             el.style.left = `${e.clientX - 16}px`;
@@ -246,7 +247,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             handleMouseDown(e, el);
           }
         }}
-        onClick={() => {
+        onClick={(e) => {
+          e.stopPropagation();
           if (!draggedFlag.current) {
             setIsCollapsed(false);
           }
@@ -288,6 +290,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         onMouseDown={(e) => {
           // Only start drag if moved enough from click position
           if (containerRef.current) {
+            e.stopPropagation();
             const el = containerRef.current;
             const rect = el.getBoundingClientRect();
             el.style.left = `${rect.left}px`;
@@ -296,7 +299,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             handleMouseDown(e, el);
           }
         }}
-        onClick={() => {
+        onClick={(e) => {
+          e.stopPropagation();
           // Docked mode is mini view, no expand needed
         }}
         className="fixed rounded-t-xl overflow-hidden shadow-lg"
