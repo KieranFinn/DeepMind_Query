@@ -44,6 +44,7 @@ interface AppState {
   followUpReady: boolean;  // true when suggestions are ready
   followUpPending: boolean;  // true when fetching suggestions
   followUpNodeId: string | null;  // which node the suggestions are for
+  followUpAbortController: AbortController | null;
 
   // Region actions
   loadRegions: () => Promise<void>;
@@ -115,6 +116,7 @@ export const useStore = create<AppState>()(
       followUpReady: false,
       followUpPending: false,
       followUpNodeId: null,
+      followUpAbortController: null,
 
       // ============ Region Actions ============
 
@@ -511,18 +513,23 @@ export const useStore = create<AppState>()(
       // ============ Follow-up Suggestions ============
 
       fetchFollowUpSuggestions: async (regionId: string, nodeId: string) => {
-        const { followUpPending, followUpNodeId, followUpReady } = get();
+        const { followUpPending, followUpNodeId, followUpReady, followUpAbortController } = get();
+        // Abort any previous request
+        if (followUpAbortController) followUpAbortController.abort();
+
         // Don't refetch if already pending for same node
         if (followUpPending && followUpNodeId === nodeId) return;
         // Don't refetch if already have suggestions for this node
         if (followUpReady && followUpNodeId === nodeId) return;
 
+        const controller = new AbortController();
         set({
           followUpPending: true,
           followUpSummary: '',
           followUpDirections: [],
           followUpReady: false,
           followUpNodeId: nodeId,
+          followUpAbortController: controller,
         });
 
         try {
@@ -538,6 +545,7 @@ export const useStore = create<AppState>()(
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            if (controller.signal.aborted) break;
 
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
@@ -591,20 +599,29 @@ export const useStore = create<AppState>()(
             followUpPending: false,
           });
         } catch (e) {
-          set({
-            followUpPending: false,
-            followUpReady: false,
-          });
+          if ((e as Error).name !== 'AbortError') {
+            set({
+              followUpPending: false,
+              followUpReady: false,
+            });
+          }
+        } finally {
+          if (!controller.signal.aborted) {
+            set({ followUpAbortController: null });
+          }
         }
       },
 
       clearFollowUpSuggestions: () => {
+        const { followUpAbortController } = get();
+        if (followUpAbortController) followUpAbortController.abort();
         set({
           followUpSummary: '',
           followUpDirections: [],
           followUpReady: false,
           followUpPending: false,
           followUpNodeId: null,
+          followUpAbortController: null,
         });
       },
 
