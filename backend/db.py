@@ -130,6 +130,22 @@ CREATE TABLE IF NOT EXISTS knowledge_point_sessions (
 )
 """
 
+LLM_CACHE_TABLE = """
+CREATE TABLE IF NOT EXISTS llm_cache (
+    id TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    messages_hash TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+# Index for faster lookups
+LLM_CACHE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_llm_cache_lookup ON llm_cache(model, messages_hash);
+"""
+
 
 def init_all_tables():
     """Initialize all database tables if they don't exist."""
@@ -140,6 +156,8 @@ def init_all_tables():
         cursor.execute(MESSAGES_TABLE)
         cursor.execute(KNOWLEDGE_POINTS_TABLE)
         cursor.execute(KNOWLEDGE_POINT_SESSIONS_TABLE)
+        cursor.execute(LLM_CACHE_TABLE)
+        cursor.execute(LLM_CACHE_INDEX)
 
 
 def init_knowledge_points_tables():

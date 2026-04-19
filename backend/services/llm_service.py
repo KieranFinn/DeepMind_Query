@@ -2,6 +2,7 @@
 import os
 import httpx
 import json
+import hashlib
 import logging
 import warnings
 from abc import ABC, abstractmethod
@@ -13,6 +14,66 @@ load_dotenv()
 
 # Provider selection
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "minimax").lower()
+
+# Cache settings
+LLM_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+LLM_CACHE_ENABLED = os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true"
+
+
+def _get_messages_hash(model: str, messages: list[dict]) -> str:
+    """Create a hash of model + messages for cache key"""
+    content = json.dumps({"model": model, "messages": messages}, sort_keys=True)
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def _get_cache_entry(model: str, messages_hash: str) -> Optional[str]:
+    """Get cached response if exists and not expired"""
+    if not LLM_CACHE_ENABLED:
+        return None
+
+    from db import get_cursor
+    try:
+        with get_cursor() as cursor:
+            cursor.execute(
+                """SELECT response FROM llm_cache
+                   WHERE model = ? AND messages_hash = ?
+                   AND datetime(created_at) > datetime('now', '-' || ? || ' seconds')""",
+                (model, messages_hash, LLM_CACHE_TTL_SECONDS)
+            )
+            row = cursor.fetchone()
+            if row:
+                # Update last accessed
+                cursor.execute(
+                    """UPDATE llm_cache SET last_accessed_at = datetime('now')
+                       WHERE model = ? AND messages_hash = ?""",
+                    (model, messages_hash)
+                )
+                logger.info(f"LLM cache hit for {model}")
+                return row[0]
+    except Exception as e:
+        logger.warning(f"LLM cache lookup failed: {e}")
+    return None
+
+
+def _set_cache_entry(model: str, messages_hash: str, response: str) -> None:
+    """Store response in cache"""
+    if not LLM_CACHE_ENABLED:
+        return
+
+    from db import get_cursor
+    from datetime import datetime
+
+    try:
+        cache_id = hashlib.sha256(f"{model}:{messages_hash}".encode()).hexdigest()
+        with get_cursor() as cursor:
+            cursor.execute(
+                """INSERT OR REPLACE INTO llm_cache (id, model, messages_hash, response, created_at, last_accessed_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (cache_id, model, messages_hash, response, datetime.utcnow().isoformat(), datetime.utcnow().isoformat())
+            )
+        logger.info(f"LLM cache stored for {model}")
+    except Exception as e:
+        logger.warning(f"LLM cache store failed: {e}")
 
 
 class LLMProvider(ABC):
@@ -208,9 +269,21 @@ class LLMService:
     async def chat(
         self, model: str, messages: list[dict], api_key: Optional[str] = None
     ) -> str:
-        """Delegate to appropriate provider based on model"""
+        """Delegate to appropriate provider based on model, with caching"""
+        # Check cache first
+        messages_hash = _get_messages_hash(model, messages)
+        cached = _get_cache_entry(model, messages_hash)
+        if cached:
+            return cached
+
+        # Call provider
         provider = self._get_provider_for_model(model)
-        return await provider.chat(model, messages, api_key)
+        response = await provider.chat(model, messages, api_key)
+
+        # Store in cache
+        _set_cache_entry(model, messages_hash, response)
+
+        return response
 
     async def stream_chat_with_fallback(
         self,
