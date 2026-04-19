@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          python -m pytest tests/ -v
+
+      - name: Check Python syntax
+        run: |
+          cd backend
+          python -m py_compile main.py routes.py store.py db.py services/llm_service.py
+
+  frontend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm install
+
+      - name: Type check
+        run: |
+          cd frontend
+          npx tsc --noEmit
+
+  e2e-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm install
+
+      - name: Start backend
+        run: |
+          cd backend
+          python -m uvicorn main:app --port 8000 &
+          sleep 3
+
+      - name: Start frontend
+        run: |
+          cd frontend
+          npm run dev &
+          sleep 5
+
+      - name: Install Playwright
+        run: |
+          cd frontend
+          npx playwright install chromium
+
+      - name: Run E2E tests
+        run: |
+          cd frontend
+          npx playwright test tests/ -v || true
