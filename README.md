@@ -2,6 +2,21 @@
 
 知识蛛网 LLM 对话 UI - 让学习路径清晰可见。
 
+**Built by Kieran + Claude Code** | [GitHub](https://github.com/KieranFinn/DeepMind_Query)
+
+## 30秒了解 (Demo)
+
+<!-- 建议：将 demo.gif 上传到 GitHubusercontent 或其他 CDN，替换下方的 URL -->
+<!-- 支持 GIF 或 MP4 格式，推荐 MP4 以获得更好的加载性能和清晰度 -->
+
+https://user-images.githubusercontent.com/your-user-id/your-repo/assets/demo.gif
+
+<p>30秒了解知识蛛网：分支对话 × 知识图谱 × 智能追问</p>
+
+<video src="assets/demo.gif" controls width="800" style="max-width: 100%; border-radius: 8px;">
+  您的浏览器不支持视频播放。请录制 demo 后替换上方 URL。
+</video>
+
 ## 核心概念
 
 传统 LLM 对话 UI 的局限：用户一次只能问一个问题，新概念引申出新概念时形成蛛网，但传统 UI 无法呈现这种知识结构。
@@ -37,13 +52,31 @@ DeepMind_Query/
 │   │   │   ├── BigBangModal.tsx        # 大爆炸分析弹窗
 │   │   │   ├── FollowUpModal.tsx      # 智能追问弹窗
 │   │   │   ├── RegionManager.tsx       # 知识区管理
-│   │   │   └── NodeCard.tsx           # 圆形节点卡片
+│   │   │   ├── NodeCard.tsx           # 圆形节点卡片
+│   │   │   └── KnowledgePointCard.tsx  # 知识卡片
 │   │   ├── store.ts      # Zustand 状态管理（含流式 SSE 工具）
 │   │   ├── api.ts        # API 调用封装
 │   │   ├── types.ts      # TypeScript 类型定义
 │   │   └── App.tsx       # 主应用组件
 │   └── package.json
 ```
+
+## 一键部署
+
+### Railway (推荐)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new)
+
+1. 点击上方按钮，连接 GitHub 仓库
+2. 设置环境变量 `ANTHROPIC_API_KEY`
+3. Railway 自动检测并部署
+
+### Docker
+```bash
+docker-compose up -d
+```
+
+### Vercel + 自定义后端
+Vercel 部署前端，后端需单独部署（Railway/Docker/云服务器）
 
 ## 快速启动
 
@@ -170,4 +203,4 @@ npm run dev
 
 ## License
 
-MIT
+MIT - Built by Kieran + Claude Code

@@ -97,28 +97,106 @@ class MiniMaxProvider(LLMProvider):
         return full_response
 
 
-class LLMService:
-    """LLM Service with pluggable provider"""
+class AnthropicProvider(LLMProvider):
+    """Official Anthropic API provider"""
 
-    def __init__(self, provider: Optional[LLMProvider] = None):
-        self._provider = provider or MiniMaxProvider()
-
-    def set_provider(self, provider: LLMProvider):
-        """Switch LLM provider at runtime"""
-        self._provider = provider
+    def __init__(self):
+        self.base_url = "https://api.anthropic.com"
 
     async def stream_chat(
         self, model: str, messages: list[dict], api_key: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
-        """Delegate to current provider"""
-        async for chunk in self._provider.stream_chat(model, messages, api_key):
+        """Stream chat completion from official Anthropic API"""
+        key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+
+        if not key:
+            yield "[Error] No API key configured. Set ANTHROPIC_API_KEY in .env"
+            return
+
+        headers = {
+            "x-api-key": key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+        }
+
+        endpoint = f"{self.base_url}/v1/messages"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "max_tokens": 1024,
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST", endpoint, headers=headers, json=payload
+            ) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    yield f"[Error {response.status_code}] {error_text.decode()}"
+                    return
+
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            type_ = chunk.get("type", "")
+                            if type_ == "content_block_delta":
+                                delta = chunk.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    yield delta.get("text", "")
+                            elif type_ == "message_delta":
+                                pass
+                        except json.JSONDecodeError:
+                            pass
+                        except Exception as e:
+                            logger.warning(f"Stream processing error: {e}")
+
+    async def chat(
+        self, model: str, messages: list[dict], api_key: Optional[str] = None
+    ) -> str:
+        """Non-streaming chat completion"""
+        full_response = ""
+        async for chunk in self.stream_chat(model, messages, api_key):
+            full_response += chunk
+        return full_response
+
+
+class LLMService:
+    """LLM Service with model-based provider routing"""
+
+    # Model name prefixes for routing
+    CLAUDE_PREFIX = "claude-"
+    MINIMAX_PREFIX = "MiniMax-"
+
+    def __init__(self):
+        self._minimax_provider = MiniMaxProvider()
+        self._anthropic_provider = AnthropicProvider()
+
+    def _get_provider_for_model(self, model: str) -> LLMProvider:
+        """Route to the appropriate provider based on model name"""
+        if model.startswith(self.CLAUDE_PREFIX):
+            return self._anthropic_provider
+        return self._minimax_provider
+
+    async def stream_chat(
+        self, model: str, messages: list[dict], api_key: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """Delegate to appropriate provider based on model"""
+        provider = self._get_provider_for_model(model)
+        async for chunk in provider.stream_chat(model, messages, api_key):
             yield chunk
 
     async def chat(
         self, model: str, messages: list[dict], api_key: Optional[str] = None
     ) -> str:
-        """Delegate to current provider"""
-        return await self._provider.chat(model, messages, api_key)
+        """Delegate to appropriate provider based on model"""
+        provider = self._get_provider_for_model(model)
+        return await provider.chat(model, messages, api_key)
 
     async def stream_chat_with_fallback(
         self,

@@ -55,7 +55,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             # Load nodes
             cursor.execute(
-                "SELECT * FROM nodes WHERE region_id = %s ORDER BY created_at",
+                "SELECT * FROM nodes WHERE region_id = ? ORDER BY created_at",
                 (region_id,)
             )
             for row in cursor.fetchall():
@@ -64,7 +64,7 @@ class ConversationStore:
 
             # Load edges
             cursor.execute(
-                "SELECT * FROM edges WHERE region_id = %s",
+                "SELECT * FROM edges WHERE region_id = ?",
                 (region_id,)
             )
             for row in cursor.fetchall():
@@ -108,7 +108,7 @@ class ConversationStore:
         messages = []
         with get_cursor() as cursor:
             cursor.execute(
-                "SELECT * FROM messages WHERE node_id = %s ORDER BY created_at",
+                "SELECT * FROM messages WHERE node_id = ? ORDER BY created_at",
                 (node_id,)
             )
             for row in cursor.fetchall():
@@ -125,7 +125,7 @@ class ConversationStore:
             tags_json = json.dumps(region.tags)
             cursor.execute(
                 """INSERT INTO regions (id, name, description, color, tags)
-                   VALUES (%s, %s, %s, %s, %s)""",
+                   VALUES (?, ?, ?, ?, ?)""",
                 (region.id, region.name, region.description, region.color, tags_json)
             )
 
@@ -134,7 +134,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             cursor.execute(
                 """INSERT INTO nodes (id, region_id, parent_id, title)
-                   VALUES (%s, %s, %s, %s)""",
+                   VALUES (?, ?, ?, ?)""",
                 (node.id, region_id, node.parent_id, node.title)
             )
 
@@ -143,7 +143,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             cursor.execute(
                 """INSERT INTO edges (id, source, target, region_id)
-                   VALUES (%s, %s, %s, %s)""",
+                   VALUES (?, ?, ?, ?)""",
                 (edge.id, edge.source, edge.target, region_id)
             )
 
@@ -194,7 +194,7 @@ class ConversationStore:
             return False
 
         with get_cursor() as cursor:
-            cursor.execute("DELETE FROM regions WHERE id = %s", (region_id,))
+            cursor.execute("DELETE FROM regions WHERE id = ?", (region_id,))
 
         del self.regions[region_id]
         if self.active_region_id == region_id:
@@ -205,7 +205,7 @@ class ConversationStore:
         if region_id not in self.regions:
             return False
         with get_cursor() as cursor:
-            cursor.execute("UPDATE regions SET name = %s WHERE id = %s", (name, region_id))
+            cursor.execute("UPDATE regions SET name = ? WHERE id = ?", (name, region_id))
         self.regions[region_id].name = name
         return True
 
@@ -270,7 +270,7 @@ class ConversationStore:
         # Due to FK constraints, delete edges first, then nodes
         with get_cursor() as cursor:
             # Delete edges involving any node in to_delete
-            placeholders = ','.join(['%s'] * len(to_delete))
+            placeholders = ','.join(['?'] * len(to_delete))
             cursor.execute(
                 f"DELETE FROM edges WHERE source IN ({placeholders}) OR target IN ({placeholders})",
                 (*to_delete, *to_delete)
@@ -295,7 +295,7 @@ class ConversationStore:
         if region_id not in self.regions:
             return False
         with get_cursor() as cursor:
-            cursor.execute("UPDATE nodes SET title = %s WHERE id = %s", (title, node_id))
+            cursor.execute("UPDATE nodes SET title = ? WHERE id = ?", (title, node_id))
         for node in self.regions[region_id].graph.nodes:
             if node.id == node_id:
                 node.title = title
@@ -307,7 +307,7 @@ class ConversationStore:
             return
         with get_cursor() as cursor:
             cursor.execute(
-                "UPDATE nodes SET last_active_at = NOW() WHERE id = %s",
+                "UPDATE nodes SET last_active_at = datetime('now') WHERE id = ?",
                 (node_id,)
             )
         for node in self.regions[region_id].graph.nodes:
@@ -326,7 +326,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             cursor.execute(
                 """INSERT INTO messages (id, node_id, role, content)
-                   VALUES (%s, %s, %s, %s)""",
+                   VALUES (?, ?, ?, ?)""",
                 (msg_id, node_id, role, content)
             )
 

@@ -1,0 +1,8 @@
+{
+  "framework": null,
+  "buildCommand": "cd frontend && npm install && npm run build",
+  "outputDirectory": "frontend/dist",
+  "installCommand": "pip install -r backend/requirements.txt",
+  "devCommand": "cd backend && uvicorn main:app --reload --port 8000",
+  "regions": ["iad1"]
+}

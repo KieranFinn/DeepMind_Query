@@ -5,6 +5,7 @@ import * as api from './api';
 
 const MODELS = [
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7' },
+  { id: 'claude-sonnet-4.6', name: 'Claude Sonnet 4' },
 ];
 
 const MAX_ERRORS = 3;
