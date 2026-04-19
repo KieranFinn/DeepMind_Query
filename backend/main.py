@@ -67,6 +67,43 @@ async def api_key_auth(request: Request, call_next):
     return await call_next(request)
 
 
+# Request ID middleware - generates unique ID for each request
+import uuid
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = request_id
+
+    # Log request start
+    logger.info(
+        f"request_start",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "client_ip": request.client.host if request.client else "unknown",
+        }
+    )
+
+    response = await call_next(request)
+
+    # Add request ID to response headers
+    response.headers["X-Request-ID"] = request_id
+
+    # Log request end
+    logger.info(
+        f"request_end",
+        extra={
+            "request_id": request_id,
+            "status_code": response.status_code,
+        }
+    )
+
+    return response
+
+
 # CORS middleware - use explicit origins, not wildcard with credentials
 app.add_middleware(
     CORSMiddleware,
