@@ -1,11 +1,14 @@
 """API Routes - Thin layer for parameter validation and response formatting"""
 import uuid
 import json
+import logging
 from collections.abc import AsyncGenerator
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from store import store
+
+logger = logging.getLogger(__name__)
 
 
 EXTRACTION_PROMPT = """你是一位知识管理专家。请从以下对话中提取关键知识点（实体、概念、技术等）。
@@ -49,6 +52,26 @@ MERGE_CHECK_PROMPT = """判断以下两个知识点是否表达同一个概念�
 以JSON格式输出：{{"merge": true/false, "merged_content": "..."}}
 """
 
+# Batch version - checks all KPs against new content in a single LLM call (fixes N+1 bug)
+MERGE_CHECK_BATCH_PROMPT = """你是一位知识管理专家。判断以下新知识点与列表中每个已有关知识点是否表达同一概念。
+
+新知识点: {new_content}
+
+已有关知识点列表：
+{knowledge_points_list}
+
+对于每个已有关知识点，判断它与新知识点是否表达同一概念。如果是，指定一个更好的合并表述。
+
+以JSON数组格式输出，每个元素包含：
+- existing_id: 已有关知识点的ID
+- merge: true/false
+- merged_content: 合并后的表述（如果merge为true）
+
+格式：[{{"existing_id": "...", "merge": true/false, "merged_content": "..."}}, ...]
+
+如果没有找到任何相似的，返回空数组。
+"""
+
 
 BATCH_MERGE_PROMPT = """你是一位知识管理专家。请分析以下知识点列表，找出可以合并的相似概念对。
 
@@ -86,6 +109,7 @@ async def stream_response(model: str, messages: list[dict], region_id: str = Non
         if full_response and region_id and node_id:
             session_service.add_message(region_id, node_id, "assistant", full_response)
     except Exception as e:
+        logger.warning(f"stream_response error: {e}")
         yield {"event": "error", "data": json.dumps({"error": str(e)})}
 from models import (
     CreateRegionRequest,
@@ -319,9 +343,9 @@ async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str
                                     "content": kp_dict[kp_id]['content'],
                                     "reason": match.get('reason', '')
                                 })
-                except Exception:
+                except Exception as e:
                     # If LLM fails, still return child node with empty matched_knowledge_points
-                    pass
+                    logger.warning(f"LLM matching failed in create_child_node: {e}")
 
     return {"node": child, "matched_knowledge_points": matched_knowledge_points}
 
@@ -407,8 +431,8 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
         # Initialize knowledge points tables if they don't exist
         from db import init_knowledge_points_tables
         init_knowledge_points_tables()
-    except Exception:
-        pass  # Tables may already exist
+    except Exception as e:
+        logger.warning(f"Failed to init knowledge points tables: {e}")
 
     # Call LLM (non-streaming)
     llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
@@ -416,17 +440,19 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
     # 5. Parse LLM response to get knowledge points
     knowledge_points = []
     try:
-        # Try to extract JSON from the response
+        # Try json.loads first (most reliable)
+        knowledge_points = json.loads(llm_response)
+    except json.JSONDecodeError:
+        # Fallback: try to extract JSON array using regex
         import re
         json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
         if json_match:
-            knowledge_points = json.loads(json_match.group())
+            try:
+                knowledge_points = json.loads(json_match.group())
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON extraction failed in extract_knowledge: {e}, response: {llm_response[:200]}")
         else:
-            # Try parsing the whole response as JSON
-            knowledge_points = json.loads(llm_response)
-    except json.JSONDecodeError:
-        # If JSON parsing fails, return empty
-        pass
+            logger.warning(f"No JSON found in LLM response for extract_knowledge: {llm_response[:200]}")
 
     # 6. Save knowledge points and link to session
     saved_points = []
@@ -444,7 +470,7 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
         from db import execute_write
         execute_write(
             """INSERT INTO knowledge_points (id, content, summary, source_session_id)
-               VALUES (%s, %s, %s, %s)""",
+               VALUES (?, ?, ?, ?)""",
             (kp_id, content, summary, str(node_id))
         )
 
@@ -452,7 +478,7 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
         kps_id = str(uuid.uuid4())
         execute_write(
             """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id)
-               VALUES (%s, %s, %s)""",
+               VALUES (?, ?, ?)""",
             (kps_id, kp_id, str(node_id))
         )
 
@@ -559,37 +585,49 @@ async def merge_check(region_id: uuid.UUID, req: MergeCheckRequest):
     if not knowledge_points:
         return {"suggestions": [], "has_merges": False}
 
-    # 3. Check each existing knowledge point for similarity
-    suggestions = []
+    # 3. Build knowledge points list for batch comparison (single LLM call - fixes N+1 bug)
+    knowledge_points_list = []
     for kp in knowledge_points:
-        prompt = MERGE_CHECK_PROMPT.format(
-            existing_content=kp['content'],
-            new_content=req.content
-        )
-        llm_messages = [
-            {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
-            {"role": "user", "content": prompt}
-        ]
+        knowledge_points_list.append(f"ID: {kp['id']}\n内容: {kp['content']}")
+    kp_list_str = "\n\n".join(knowledge_points_list)
 
-        # Call LLM (non-streaming)
+    prompt = MERGE_CHECK_BATCH_PROMPT.format(
+        new_content=req.content,
+        knowledge_points_list=kp_list_str
+    )
+    llm_messages = [
+        {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
+        {"role": "user", "content": prompt}
+    ]
+
+    # Single LLM call for all knowledge points
+    try:
         llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    except Exception as e:
+        logger.warning(f"LLM call failed in merge_check: {e}")
+        return {"suggestions": [], "has_merges": False}
 
-        # Parse LLM response
-        try:
-            import re
-            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                if isinstance(result, dict) and result.get('merge'):
-                    suggestions.append(MergeSuggestion(
-                        existing_id=kp['id'],
-                        existing_content=kp['content'],
-                        new_content=req.content,
-                        merge=True,
-                        merged_content=result.get('merged_content')
-                    ))
-        except json.JSONDecodeError:
-            continue
+    # Parse LLM response
+    suggestions = []
+    try:
+        results = json.loads(llm_response)
+        if isinstance(results, list):
+            for item in results:
+                if isinstance(item, dict) and item.get('merge'):
+                    existing_id = str(item.get('existing_id', ''))
+                    # Find the matching KP
+                    matching_kp = next((kp for kp in knowledge_points if kp['id'] == existing_id), None)
+                    if matching_kp:
+                        suggestions.append(MergeSuggestion(
+                            existing_id=existing_id,
+                            existing_content=matching_kp['content'],
+                            new_content=req.content,
+                            merge=True,
+                            merged_content=item.get('merged_content')
+                        ))
+    except json.JSONDecodeError as e:
+        logger.warning(f"JSON parse failed in merge_check: {e}, response: {llm_response[:500]}")
+        return {"suggestions": [], "has_merges": False}
 
     return MergeCheckResponse(
         suggestions=suggestions,
@@ -672,8 +710,8 @@ async def batch_merge(region_id: uuid.UUID):
                                 merge=False,
                                 merged_content=None
                             ))
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as e:
+        logger.warning(f"JSON parse failed in batch_merge: {e}, response: {llm_response[:200]}")
 
     return BatchMergeResponse(pairs=pairs, mergeable_pairs=mergeable_pairs)
 
@@ -696,10 +734,12 @@ async def merge_knowledge_points(
 
     # Update the existing knowledge point
     from db import execute_write
+    from datetime import datetime
+    now = datetime.utcnow()
     execute_write(
-        """UPDATE knowledge_points SET content = %s, summary = %s, updated_at = NOW()
-           WHERE id = %s""",
-        (new_content, new_content[:50] if len(new_content) > 50 else new_content, existing_id)
+        """UPDATE knowledge_points SET content = ?, summary = ?, updated_at = ?
+           WHERE id = ?""",
+        (new_content, new_content[:50] if len(new_content) > 50 else new_content, now, existing_id)
     )
 
     if delete_source:

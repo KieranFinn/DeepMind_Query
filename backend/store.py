@@ -1,4 +1,4 @@
-"""Graph-based conversation store using Dolt database - Region = Graph, Node = Session"""
+"""Graph-based conversation store using SQLite database - Region = Graph, Node = Session"""
 
 import asyncio
 import json
@@ -11,7 +11,7 @@ from models import KnowledgeRegion, Graph, Node, Edge, Message, KnowledgePoint, 
 
 
 class ConversationStore:
-    """Store using Dolt database for persistence"""
+    """Store using SQLite database for persistence"""
 
     def __init__(self):
         self.regions: dict[str, KnowledgeRegion] = {}
@@ -80,6 +80,9 @@ class ConversationStore:
     def _row_to_region(self, row: dict) -> KnowledgeRegion:
         """Convert database row to KnowledgeRegion"""
         tags = json.loads(row['tags']) if row['tags'] else []
+        # SQLite returns strings for DATETIME, so use directly or fallback
+        created_at = row['created_at'] if row['created_at'] else datetime.utcnow().isoformat()
+        last_active = row['last_active_at'] if row['last_active_at'] else datetime.utcnow().isoformat()
         return KnowledgeRegion(
             id=str(row['id']),
             name=row['name'],
@@ -87,20 +90,23 @@ class ConversationStore:
             color=row['color'] or '#d4a574',
             tags=tags,
             graph=Graph(nodes=[], edges=[]),
-            created_at=row['created_at'].isoformat() if row['created_at'] else datetime.utcnow().isoformat(),
-            last_active_at=row['last_active_at'].isoformat() if row['last_active_at'] else datetime.utcnow().isoformat(),
+            created_at=created_at,
+            last_active_at=last_active,
         )
 
     def _row_to_node(self, row: dict) -> Node:
         """Convert database row to Node"""
         messages = self._load_messages(str(row['id'])) if row['id'] else []
+        # SQLite returns strings for DATETIME, so use directly or fallback
+        created_at = row['created_at'] if row['created_at'] else datetime.utcnow().isoformat()
+        last_active = row['last_active_at'] if row['last_active_at'] else datetime.utcnow().isoformat()
         return Node(
             id=str(row['id']),
             title=row['title'],
             messages=messages,
             parent_id=str(row['parent_id']) if row['parent_id'] else None,
-            created_at=row['created_at'].isoformat() if row['created_at'] else datetime.utcnow().isoformat(),
-            last_active_at=row['last_active_at'].isoformat() if row['last_active_at'] else datetime.utcnow().isoformat(),
+            created_at=created_at,
+            last_active_at=last_active,
         )
 
     def _load_messages(self, node_id: str) -> list[Message]:
@@ -112,10 +118,12 @@ class ConversationStore:
                 (node_id,)
             )
             for row in cursor.fetchall():
+                # SQLite returns strings for DATETIME
+                created_at = row['created_at'] if row['created_at'] else datetime.utcnow().isoformat()
                 messages.append(Message(
                     role=row['role'],
                     content=row['content'],
-                    created_at=row['created_at'].isoformat() if row['created_at'] else datetime.utcnow().isoformat(),
+                    created_at=created_at,
                 ))
         return messages
 
@@ -126,7 +134,7 @@ class ConversationStore:
             cursor.execute(
                 """INSERT INTO regions (id, name, description, color, tags)
                    VALUES (?, ?, ?, ?, ?)""",
-                (region.id, region.name, region.description, region.color, tags_json)
+                (str(region.id), region.name, region.description, region.color, tags_json)
             )
 
     def _save_node_to_db(self, node: Node, region_id: str):
@@ -135,7 +143,7 @@ class ConversationStore:
             cursor.execute(
                 """INSERT INTO nodes (id, region_id, parent_id, title)
                    VALUES (?, ?, ?, ?)""",
-                (node.id, region_id, node.parent_id, node.title)
+                (str(node.id), region_id, str(node.parent_id) if node.parent_id else None, node.title)
             )
 
     def _save_edge_to_db(self, edge: Edge, region_id: str):
@@ -144,7 +152,7 @@ class ConversationStore:
             cursor.execute(
                 """INSERT INTO edges (id, source, target, region_id)
                    VALUES (?, ?, ?, ?)""",
-                (edge.id, edge.source, edge.target, region_id)
+                (str(edge.id), str(edge.source), str(edge.target), region_id)
             )
 
     # Region operations
@@ -245,7 +253,7 @@ class ConversationStore:
             if region_id not in self.regions:
                 return None
         for node in self.regions[region_id].graph.nodes:
-            if node.id == node_id:
+            if str(node.id) == str(node_id):
                 return node
         return None
 
@@ -255,16 +263,21 @@ class ConversationStore:
 
         graph = self.regions[region_id].graph
 
+        # Helper to normalize ID to string for comparison (handles UUID vs str mismatch)
+        def to_str(id_val) -> str:
+            return str(id_val) if not isinstance(id_val, str) else id_val
+
         # Find all descendant node IDs using BFS (cascade delete)
         to_delete = {node_id}
         queue = deque([node_id])
         while queue:
             current = queue.popleft()
+            current_str = to_str(current)
             # Find all children of current node
             for edge in graph.edges:
-                if edge.source == current and edge.target not in to_delete:
-                    to_delete.add(edge.target)
-                    queue.append(edge.target)
+                if to_str(edge.source) == current_str and to_str(edge.target) not in to_delete:
+                    to_delete.add(to_str(edge.target))
+                    queue.append(to_str(edge.target))
 
         # Delete from database - need to delete in correct order (children before parents)
         # Due to FK constraints, delete edges first, then nodes
@@ -281,13 +294,14 @@ class ConversationStore:
                 tuple(to_delete)
             )
 
-        # Update in-memory graph
+        # Update in-memory graph (compare using string normalization)
+        to_delete_str = {to_str(id) for id in to_delete}
         self.regions[region_id].graph.nodes = [
-            n for n in self.regions[region_id].graph.nodes if n.id not in to_delete
+            n for n in self.regions[region_id].graph.nodes if to_str(n.id) not in to_delete_str
         ]
         self.regions[region_id].graph.edges = [
             e for e in self.regions[region_id].graph.edges
-            if e.source not in to_delete and e.target not in to_delete
+            if to_str(e.source) not in to_delete_str and to_str(e.target) not in to_delete_str
         ]
         return True
 
@@ -297,7 +311,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             cursor.execute("UPDATE nodes SET title = ? WHERE id = ?", (title, node_id))
         for node in self.regions[region_id].graph.nodes:
-            if node.id == node_id:
+            if str(node.id) == str(node_id):
                 node.title = title
                 return True
         return False
@@ -311,7 +325,7 @@ class ConversationStore:
                 (node_id,)
             )
         for node in self.regions[region_id].graph.nodes:
-            if node.id == node_id:
+            if str(node.id) == str(node_id):
                 node.last_active_at = datetime.utcnow().isoformat()
                 break
 
@@ -351,7 +365,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             cursor.execute(
                 """INSERT INTO knowledge_points (id, content, summary, source_session_id, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (kp_id, content, summary, source_session_id, now, now)
             )
 
@@ -372,9 +386,9 @@ class ConversationStore:
 
     def get_knowledge_point(self, kp_id: str) -> Optional[KnowledgePoint]:
         """Get a knowledge point by ID."""
-        kp_id = str(kp_id)  # Ensure string for MySQL
+        kp_id = str(kp_id)
         with get_cursor() as cursor:
-            cursor.execute("SELECT * FROM knowledge_points WHERE id = %s", (kp_id,))
+            cursor.execute("SELECT * FROM knowledge_points WHERE id = ?", (kp_id,))
             row = cursor.fetchone()
             if not row:
                 return None
@@ -389,12 +403,12 @@ class ConversationStore:
 
     def get_knowledge_points_for_session(self, session_id: str) -> list[KnowledgePoint]:
         """Get all knowledge points linked to a session."""
-        session_id = str(session_id)  # Ensure string for MySQL
+        session_id = str(session_id)
         with get_cursor() as cursor:
             cursor.execute(
                 """SELECT kp.* FROM knowledge_points kp
                    JOIN knowledge_point_sessions kps ON kp.id = kps.knowledge_point_id
-                   WHERE kps.session_id = %s
+                   WHERE kps.session_id = ?
                    ORDER BY kps.created_at""",
                 (session_id,)
             )
@@ -412,15 +426,15 @@ class ConversationStore:
 
     def link_knowledge_point_to_session(self, kp_id: str, session_id: str) -> Optional[KnowledgePointSession]:
         """Link a knowledge point to a session."""
-        kp_id = str(kp_id)  # Ensure string for MySQL
-        session_id = str(session_id)  # Ensure string for MySQL
+        kp_id = str(kp_id)
+        session_id = str(session_id)
         kps_id = str(uuid.uuid4())
         now = datetime.utcnow()
 
         with get_cursor() as cursor:
             cursor.execute(
                 """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id, created_at)
-                   VALUES (%s, %s, %s, %s)""",
+                   VALUES (?, ?, ?, ?)""",
                 (kps_id, kp_id, session_id, now)
             )
 
@@ -433,10 +447,10 @@ class ConversationStore:
 
     def delete_knowledge_point(self, kp_id: str) -> bool:
         """Delete a knowledge point and its session links."""
-        kp_id = str(kp_id)  # Ensure string for MySQL
+        kp_id = str(kp_id)
         with get_cursor() as cursor:
             # Delete the knowledge point (session links will cascade due to FK constraint)
-            cursor.execute("DELETE FROM knowledge_points WHERE id = %s", (kp_id,))
+            cursor.execute("DELETE FROM knowledge_points WHERE id = ?", (kp_id,))
             return cursor.rowcount > 0
 
     def get_knowledge_points_for_region(self, region_id: str) -> list[dict]:
@@ -447,7 +461,7 @@ class ConversationStore:
         with get_cursor() as cursor:
             # Get all node IDs for this region
             cursor.execute(
-                "SELECT id FROM nodes WHERE region_id = %s",
+                "SELECT id FROM nodes WHERE region_id = ?",
                 (region_id,)
             )
             node_rows = cursor.fetchall()
@@ -457,7 +471,7 @@ class ConversationStore:
                 return []
 
             # Get knowledge_point_ids linked to those nodes via knowledge_point_sessions
-            placeholders = ','.join(['%s'] * len(node_ids))
+            placeholders = ','.join(['?'] * len(node_ids))
             cursor.execute(
                 f"""SELECT DISTINCT kp.id, kp.content, kp.summary, kp.source_session_id,
                            kp.created_at, kp.updated_at

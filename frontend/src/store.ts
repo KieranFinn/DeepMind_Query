@@ -594,14 +594,24 @@ export const useStore = create<AppState>()(
             fullContent = chunk;
           });
 
-          // Parse the response - look for 【摘要】 and 【方向】
+          // Parse the response - look for 【摘要】 and 【方向】 with regex for robustness
           let summary = '';
           const directions: string[] = [];
           const lines = fullContent.split('\n');
+
+          // Robust regex patterns that handle variations like "【 摘要 】" or "总结"
+          const summaryPattern = /^【\s*([摘要总结])】\s*(.+)/;
+          const direction1Pattern = /^【\s*方向\s*1\s*[】:]\s*(.+)/;
+          const direction2Pattern = /^【\s*方向\s*2\s*[】:]\s*(.+)/;
+
           for (const line of lines) {
-            if (line.startsWith('【摘要】')) summary = line.slice(4).trim();
-            else if (line.startsWith('【方向1】')) directions[0] = line.slice(4).trim();
-            else if (line.startsWith('【方向2】')) directions[1] = line.slice(4).trim();
+            const trimmed = line.trim();
+            const summaryMatch = trimmed.match(summaryPattern);
+            if (summaryMatch) summary = summaryMatch[2].trim();
+            const dir1Match = trimmed.match(direction1Pattern);
+            if (dir1Match) directions[0] = dir1Match[1].trim();
+            const dir2Match = trimmed.match(direction2Pattern);
+            if (dir2Match) directions[1] = dir2Match[1].trim();
           }
 
           // Fallback: if no markers found, create generic summary
