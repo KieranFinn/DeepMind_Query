@@ -3,12 +3,16 @@ import os
 import httpx
 import json
 import logging
+import warnings
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 load_dotenv()
+
+# Provider selection
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "minimax").lower()
 
 
 class LLMProvider(ABC):
@@ -39,10 +43,20 @@ class MiniMaxProvider(LLMProvider):
         self, model: str, messages: list[dict], api_key: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion from MiniMax Anthropic API"""
-        key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        # Check for new MINIMAX_API_KEY first, fall back to ANTHROPIC_API_KEY with warning
+        key = api_key or os.getenv("MINIMAX_API_KEY", "")
+        if not key:
+            old_key = os.getenv("ANTHROPIC_API_KEY", "")
+            if old_key:
+                warnings.warn(
+                    "ANTHROPIC_API_KEY is deprecated for MiniMax. Use MINIMAX_API_KEY instead.",
+                    DeprecationWarning
+                )
+                logger.warning("ANTHROPIC_API_KEY is deprecated. Please use MINIMAX_API_KEY.")
+                key = old_key
 
         if not key:
-            yield "[Error] No API key configured. Set ANTHROPIC_API_KEY in .env"
+            yield "[Error] No API key configured. Set MINIMAX_API_KEY in .env"
             return
 
         headers = {
