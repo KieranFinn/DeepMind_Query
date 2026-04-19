@@ -58,11 +58,6 @@ class SessionService:
             messages.append({"role": msg.role, "content": msg.content})
         return messages
 
-    @staticmethod
-    def validate_node_exists(region_id: str, node_id: str) -> bool:
-        """Check if node exists"""
-        return store.get_node(region_id, node_id) is not None
-
 
 # Global instance
 session_service = SessionService()

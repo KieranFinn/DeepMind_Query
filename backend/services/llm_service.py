@@ -12,9 +12,6 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# Provider selection
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "minimax").lower()
-
 # Cache settings
 LLM_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 LLM_CACHE_ENABLED = os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true"
@@ -284,27 +281,6 @@ class LLMService:
         _set_cache_entry(model, messages_hash, response)
 
         return response
-
-    async def stream_chat_with_fallback(
-        self,
-        model: str,
-        messages: list[dict],
-        fallback_models: list[str] = None,
-        api_key: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        """Try primary model, fall back to alternatives on error"""
-        models = [model] + (fallback_models or [])
-
-        for attempt_model in models:
-            try:
-                async for chunk in self.stream_chat(attempt_model, messages, api_key):
-                    yield chunk
-                return
-            except Exception as e:
-                if attempt_model == models[-1]:
-                    yield f"[Error] All models failed: {e}"
-                else:
-                    logger.warning(f"Model {attempt_model} failed, trying next...")
 
 
 # Global instance

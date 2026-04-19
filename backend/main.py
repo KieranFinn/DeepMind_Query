@@ -125,7 +125,6 @@ from time import time
 
 RATE_LIMIT_TOKENS = 10  # Max requests
 RATE_LIMIT_REFILL = 60  # Seconds to refill bucket
-RATE_LIMIT_PATH = "/api/regions"  # Only rate limit message endpoint
 
 rate_limit_data = defaultdict(lambda: {"tokens": RATE_LIMIT_TOKENS, "last_refill": time()})
 

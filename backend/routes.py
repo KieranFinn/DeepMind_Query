@@ -1,6 +1,7 @@
 """API Routes - Thin layer for parameter validation and response formatting"""
 import uuid
 import json
+import re
 import logging
 from collections.abc import AsyncGenerator
 from fastapi import APIRouter, HTTPException, Query
@@ -9,6 +10,47 @@ from sse_starlette.sse import EventSourceResponse
 from store import store
 
 logger = logging.getLogger(__name__)
+
+
+def parse_llm_json_response(response: str, context: str = "unknown") -> list:
+    """
+    Parse LLM JSON response with robust fallback.
+    Tries json.loads first, then regex extraction.
+
+    Args:
+        response: Raw LLM response text
+        context: Context string for logging (e.g., "extract_knowledge", "batch_merge")
+
+    Returns:
+        Parsed JSON (list or dict), or empty list/dict on failure
+    """
+    if not response:
+        return []
+
+    # Try direct JSON parse first (most reliable)
+    try:
+        return json.loads(response)
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: extract JSON array or object using regex
+    json_match = re.search(r'\[.*\]', response, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON extract failed in {context}: {e}, response: {response[:200]}")
+    else:
+        # Try to find JSON object
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON extract failed in {context}: {e}, response: {response[:200]}")
+
+    logger.warning(f"No JSON found in {context} response: {response[:200]}")
+    return []
 
 
 EXTRACTION_PROMPT = """你是一位知识管理专家。请从以下对话中提取关键知识点（实体、概念、技术等）。
@@ -38,18 +80,6 @@ MATCH_PROMPT = """你是一位知识匹配专家。用户要开始一个新对�
 - 按相关度排序
 - 以JSON数组格式输出，每个元素包含知识点ID和相关性理由
 - 如果没有相关的，返回空数组
-"""
-
-
-MERGE_CHECK_PROMPT = """判断以下两个知识点是否表达同一个概念：
-
-知识点A: {existing_content}
-知识点B: {new_content}
-
-如果是同一概念，返回true和合并后的表述（选择一个更准确、更完整的表述）；
-如果不是，返回false。
-
-以JSON格式输出：{{"merge": true/false, "merged_content": "..."}}
 """
 
 # Batch version - checks all KPs against new content in a single LLM call (fixes N+1 bug)
@@ -320,17 +350,10 @@ async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str
                 try:
                     llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
 
-                    # Parse LLM response
-                    matches = []
-                    try:
-                        import re
-                        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
-                        if json_match:
-                            matches = json.loads(json_match.group())
-                        else:
-                            matches = json.loads(llm_response)
-                    except json.JSONDecodeError:
-                        pass
+                    # Parse LLM response using helper
+                    matches = parse_llm_json_response(llm_response, "match_knowledge")
+                    if not isinstance(matches, list):
+                        matches = []
 
                     # Build final response with content
                     kp_dict = {kp['id']: kp for kp in knowledge_points}
@@ -438,21 +461,9 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
     llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
 
     # 5. Parse LLM response to get knowledge points
-    knowledge_points = []
-    try:
-        # Try json.loads first (most reliable)
-        knowledge_points = json.loads(llm_response)
-    except json.JSONDecodeError:
-        # Fallback: try to extract JSON array using regex
-        import re
-        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
-        if json_match:
-            try:
-                knowledge_points = json.loads(json_match.group())
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON extraction failed in extract_knowledge: {e}, response: {llm_response[:200]}")
-        else:
-            logger.warning(f"No JSON found in LLM response for extract_knowledge: {llm_response[:200]}")
+    knowledge_points = parse_llm_json_response(llm_response, "extract_knowledge")
+    if not isinstance(knowledge_points, list):
+        knowledge_points = []
 
     # 6. Save knowledge points and link to session
     saved_points = []
@@ -532,17 +543,10 @@ async def match_knowledge(region_id: uuid.UUID, question: str = Query(..., descr
     # Call LLM (non-streaming)
     llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
 
-    # 5. Parse LLM response
-    matches = []
-    try:
-        import re
-        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
-        if json_match:
-            matches = json.loads(json_match.group())
-        else:
-            matches = json.loads(llm_response)
-    except json.JSONDecodeError:
-        pass
+    # 5. Parse LLM response using helper
+    matches = parse_llm_json_response(llm_response, "match_knowledge")
+    if not isinstance(matches, list):
+        matches = []
 
     # 6. Ensure response format
     if not isinstance(matches, list):
@@ -671,47 +675,41 @@ async def batch_merge(region_id: uuid.UUID):
     # Call LLM (non-streaming)
     llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
 
-    # 5. Parse LLM response
+    # 5. Parse LLM response using helper
     pairs = []
     mergeable_pairs = []
     kp_dict = {kp['id']: kp for kp in knowledge_points}
 
-    try:
-        import re
-        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
-        if json_match:
-            results = json.loads(json_match.group())
-            if isinstance(results, list):
-                for item in results:
-                    if isinstance(item, dict) and item.get('merge'):
-                        id1 = str(item.get('id1', ''))
-                        id2 = str(item.get('id2', ''))
-                        if id1 in kp_dict and id2 in kp_dict:
-                            pair = BatchMergePair(
-                                id1=id1,
-                                id2=id2,
-                                content1=kp_dict[id1]['content'],
-                                content2=kp_dict[id2]['content'],
-                                merge=True,
-                                merged_content=item.get('merged_content')
-                            )
-                            pairs.append(pair)
-                            mergeable_pairs.append(pair)
-                    elif isinstance(item, dict):
-                        # Include non-merge pairs for reference
-                        id1 = str(item.get('id1', ''))
-                        id2 = str(item.get('id2', ''))
-                        if id1 in kp_dict and id2 in kp_dict:
-                            pairs.append(BatchMergePair(
-                                id1=id1,
-                                id2=id2,
-                                content1=kp_dict[id1]['content'],
-                                content2=kp_dict[id2]['content'],
-                                merge=False,
-                                merged_content=None
-                            ))
-    except json.JSONDecodeError as e:
-        logger.warning(f"JSON parse failed in batch_merge: {e}, response: {llm_response[:200]}")
+    results = parse_llm_json_response(llm_response, "batch_merge")
+    if isinstance(results, list):
+        for item in results:
+            if isinstance(item, dict) and item.get('merge'):
+                id1 = str(item.get('id1', ''))
+                id2 = str(item.get('id2', ''))
+                if id1 in kp_dict and id2 in kp_dict:
+                    pair = BatchMergePair(
+                        id1=id1,
+                        id2=id2,
+                        content1=kp_dict[id1]['content'],
+                        content2=kp_dict[id2]['content'],
+                        merge=True,
+                        merged_content=item.get('merged_content')
+                    )
+                    pairs.append(pair)
+                    mergeable_pairs.append(pair)
+            elif isinstance(item, dict):
+                # Include non-merge pairs for reference
+                id1 = str(item.get('id1', ''))
+                id2 = str(item.get('id2', ''))
+                if id1 in kp_dict and id2 in kp_dict:
+                    pairs.append(BatchMergePair(
+                        id1=id1,
+                        id2=id2,
+                        content1=kp_dict[id1]['content'],
+                        content2=kp_dict[id2]['content'],
+                        merge=False,
+                        merged_content=None
+                    ))
 
     return BatchMergeResponse(pairs=pairs, mergeable_pairs=mergeable_pairs)
 
@@ -743,9 +741,12 @@ async def merge_knowledge_points(
     )
 
     if delete_source:
-        # Link any sessions from deleted source to the existing point
-        # (source_session_id remains pointing to original session)
-        pass
+        # Get the existing point's source_session_id to potentially relink
+        existing_kp = store.get_knowledge_point(existing_id)
+        if existing_kp:
+            # Delete all knowledge point session links for this point
+            from db import execute_write
+            execute_write("DELETE FROM knowledge_point_sessions WHERE knowledge_point_id = ?", (existing_id,))
 
     return {"success": True, "existing_id": existing_id, "merged_content": new_content}
 

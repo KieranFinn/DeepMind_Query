@@ -16,11 +16,7 @@ class ConversationStore:
     def __init__(self):
         self.regions: dict[str, KnowledgeRegion] = {}
         self.active_region_id: Optional[str] = None
-        self._lock = asyncio.Lock()
         self._loaded = False
-
-    async def lock(self):
-        return self._lock
 
     def _ensure_loaded(self):
         """Lazy load regions from database"""
