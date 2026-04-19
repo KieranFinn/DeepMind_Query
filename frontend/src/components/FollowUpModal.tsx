@@ -4,47 +4,36 @@ import { useStore } from '../store';
 interface FollowUpModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onCreateFollowUp: (title: string, link: boolean) => void;
 }
 
-export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
+export default function FollowUpModal({ isOpen, onClose, onCreateFollowUp }: FollowUpModalProps) {
   const { activeRegionId, activeNodeId, followUpSummary, followUpDirections, followUpPending } = useStore();
   const [customInput, setCustomInput] = useState('');
   const [showConfirm, setShowConfirm] = useState(false);
-  const [confirmText, setConfirmText] = useState('');
-
-  const isLoading = followUpPending;
-  const summary = followUpSummary;
-  const suggestions = followUpDirections;
 
   if (!isOpen) return null;
 
   const handleSelectDirection = (direction: string) => {
     if (activeRegionId && activeNodeId) {
       onClose();
-      window.dispatchEvent(new CustomEvent('followup-create', {
-        detail: { title: direction, link: true }
-      }));
+      onCreateFollowUp(direction, true);
     }
   };
 
   const handleCustomSubmit = () => {
     if (!customInput.trim()) return;
-    setConfirmText(customInput.trim());
     setShowConfirm(true);
   };
 
   const handleConfirmNoLink = () => {
     onClose();
-    window.dispatchEvent(new CustomEvent('followup-create', {
-      detail: { title: confirmText, link: true }
-    }));
+    onCreateFollowUp(customInput.trim(), true);
   };
 
   const handleNoLink = () => {
     onClose();
-    window.dispatchEvent(new CustomEvent('followup-create', {
-      detail: { title: '', link: false }
-    }));
+    onCreateFollowUp('', false);
   };
 
   return (
@@ -77,7 +66,7 @@ export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
         </div>
 
         {/* Loading state */}
-        {isLoading && (
+        {followUpPending && (
           <div className="text-center py-8">
             <div className="text-3xl mb-4 animate-pulse">🧠</div>
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -87,10 +76,10 @@ export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
         )}
 
         {/* Suggestions ready */}
-        {!isLoading && !showConfirm && (
+        {!followUpPending && !showConfirm && (
           <div className="space-y-4">
             {/* Summary */}
-            {summary && (
+            {followUpSummary && (
               <div
                 className="p-4 rounded-xl text-sm"
                 style={{
@@ -102,18 +91,18 @@ export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
                 <div className="text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>
                   会话摘要
                 </div>
-                {summary}
+                {followUpSummary}
               </div>
             )}
 
             {/* AI Suggestions */}
-            {suggestions.length > 0 && (
+            {followUpDirections.length > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
                   可能的追问方向
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {suggestions.map((dir, i) => (
+                  {followUpDirections.map((dir, i) => (
                     <button
                       key={i}
                       onClick={() => handleSelectDirection(dir)}
@@ -181,7 +170,7 @@ export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
         )}
 
         {/* Confirmation for custom input */}
-        {!isLoading && showConfirm && (
+        {!followUpPending && showConfirm && (
           <div className="space-y-4">
             <div
               className="p-4 rounded-xl"
@@ -194,7 +183,7 @@ export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
                 确认关联到会话
               </div>
               <p className="text-sm">
-                新会话 "<span style={{ color: 'var(--accent)' }}>{confirmText}</span>" 将作为当前会话的追问分支
+                新会话 "<span style={{ color: 'var(--accent)' }}>{customInput.trim()}</span>" 将作为当前会话的追问分支
               </p>
             </div>
             <div className="flex gap-2">
@@ -224,7 +213,7 @@ export default function FollowUpModal({ isOpen, onClose }: FollowUpModalProps) {
         )}
 
         {/* Empty state - not enough conversation */}
-        {!isLoading && !summary && suggestions.length === 0 && !showConfirm && (
+        {!followUpPending && !followUpSummary && followUpDirections.length === 0 && !showConfirm && (
           <div className="text-center py-8">
             <div className="text-3xl mb-4">🤔</div>
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>

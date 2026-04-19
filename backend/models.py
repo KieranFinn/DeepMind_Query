@@ -60,3 +60,64 @@ class CreateNodeRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     content: str
     model: str = "MiniMax-M2.7"
+
+
+class KnowledgePoint(BaseModel):
+    """A knowledge point extracted from a session"""
+    id: UUID = Field(default_factory=uuid4)
+    content: str
+    summary: Optional[str] = None
+    source_session_id: Optional[UUID] = None  # Which session extracted this
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class KnowledgePointSession(BaseModel):
+    """Many-to-many relationship between knowledge points and sessions"""
+    id: UUID = Field(default_factory=uuid4)
+    knowledge_point_id: UUID
+    session_id: UUID  # FK to nodes
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CreateKnowledgePointRequest(BaseModel):
+    content: str = Field(..., description="The knowledge point content")
+    summary: Optional[str] = Field(None, max_length=500)
+    source_session_id: Optional[UUID] = None
+
+
+class MergeCheckRequest(BaseModel):
+    """Request for checking if new content matches existing knowledge points"""
+    content: str = Field(..., description="The new knowledge point content to check")
+    threshold: Optional[float] = Field(0.8, description="Similarity threshold (0-1)")
+
+
+class MergeSuggestion(BaseModel):
+    """A suggested merge between two knowledge points"""
+    existing_id: str
+    existing_content: str
+    new_content: str
+    merge: bool
+    merged_content: Optional[str] = None
+
+
+class MergeCheckResponse(BaseModel):
+    """Response from merge check"""
+    suggestions: list[MergeSuggestion]
+    has_merges: bool
+
+
+class BatchMergePair(BaseModel):
+    """A pair of knowledge points that could be merged"""
+    id1: str
+    id2: str
+    content1: str
+    content2: str
+    merge: bool
+    merged_content: Optional[str] = None
+
+
+class BatchMergeResponse(BaseModel):
+    """Response from batch merge check"""
+    pairs: list[BatchMergePair]
+    mergeable_pairs: list[BatchMergePair]

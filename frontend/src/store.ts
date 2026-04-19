@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { KnowledgeRegion, Graph, Node } from './types';
+import { KnowledgeRegion, Graph, Node, KnowledgePoint } from './types';
 import * as api from './api';
 
 const MODELS = [
@@ -13,6 +13,85 @@ interface ErrorItem {
   id: string;
   message: string;
   timestamp: number;
+}
+
+// ============ Shared Streaming Utility ============
+
+type StreamingCallback = (content: string) => void;
+
+async function streamSSE(
+  response: Response,
+  signal: AbortSignal,
+  onChunk: StreamingCallback,
+  throttleMs = 0
+): Promise<string> {
+  if (!response.ok) {
+    let errorMsg = `HTTP ${response.status}`;
+    try {
+      const errData = await response.json();
+      errorMsg = errData.detail || errorMsg;
+    } catch {}
+    throw new Error(errorMsg);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  const decoder = new TextDecoder();
+  let fullContent = '';
+  let lastUpdateTime = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (signal.aborted) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') continue;
+        try {
+          const sseEvent = JSON.parse(data);
+          if (sseEvent.event === 'error') {
+            const errData = JSON.parse(sseEvent.data);
+            throw new Error(errData.error || 'Stream error');
+          }
+          if (sseEvent.data) {
+            const inner = JSON.parse(sseEvent.data);
+            const text = inner.content || '';
+            if (text) {
+              fullContent += text;
+              const now = Date.now();
+              if (!throttleMs || now - lastUpdateTime >= throttleMs) {
+                onChunk(fullContent);
+                lastUpdateTime = now;
+              }
+            }
+          }
+        } catch (parseErr) {
+          if (parseErr instanceof Error && parseErr.message.startsWith('Stream error')) throw parseErr;
+          try {
+            const parsed = JSON.parse(data);
+            const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
+            if (text) {
+              fullContent += text;
+              const now = Date.now();
+              if (!throttleMs || now - lastUpdateTime >= throttleMs) {
+                onChunk(fullContent);
+                lastUpdateTime = now;
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
+  // Final update for any remaining content
+  onChunk(fullContent);
+  return fullContent;
 }
 
 interface AppState {
@@ -46,6 +125,11 @@ interface AppState {
   followUpNodeId: string | null;  // which node the suggestions are for
   followUpAbortController: AbortController | null;
 
+  // Knowledge Points
+  knowledgePoints: KnowledgePoint[];
+  knowledgePointsLoading: boolean;
+  activeNodeKnowledgePoints: KnowledgePoint[];  // KPs for the currently selected node
+
   // Region actions
   loadRegions: () => Promise<void>;
   createRegion: (name: string, description?: string, color?: string) => Promise<void>;
@@ -58,6 +142,7 @@ interface AppState {
   setActiveNode: (nodeId: string) => Promise<void>;
   createNode: (title?: string, parentId?: string) => Promise<void>;
   deleteNode: (regionId: string, nodeId: string) => Promise<void>;
+  updateNode: (regionId: string, nodeId: string, title: string) => Promise<void>;
   sendUserMessage: (content: string) => Promise<void>;
   createChildNode: (parentId: string, title?: string) => Promise<void>;
   cancelStreaming: () => void;
@@ -76,16 +161,11 @@ interface AppState {
 
   // Follow-up Actions
   fetchFollowUpSuggestions: (regionId: string, nodeId: string) => Promise<void>;
-  clearFollowUpSuggestions: () => void;
-}
 
-function findRegion(regions: KnowledgeRegion[], regionId: string): KnowledgeRegion | null {
-  return regions.find(r => r.id === regionId) || null;
-}
-
-function findNode(graph: Graph | null, nodeId: string): Node | null {
-  if (!graph) return null;
-  return graph.nodes.find(n => n.id === nodeId) || null;
+  // Knowledge Point Actions
+  fetchKnowledgePointsForNode: (regionId: string, nodeId: string) => Promise<void>;
+  clearKnowledgePoints: () => void;
+  matchKnowledgePoints: (regionId: string, query: string) => Promise<void>;
 }
 
 export const useStore = create<AppState>()(
@@ -118,6 +198,11 @@ export const useStore = create<AppState>()(
       followUpNodeId: null,
       followUpAbortController: null,
 
+      // Knowledge Points initial state
+      knowledgePoints: [],
+      knowledgePointsLoading: false,
+      activeNodeKnowledgePoints: [],
+
       // ============ Region Actions ============
 
       loadRegions: async () => {
@@ -145,7 +230,7 @@ export const useStore = create<AppState>()(
             });
           }
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false, isHydrated: true });
         }
       },
@@ -162,7 +247,7 @@ export const useStore = create<AppState>()(
           // Load graph for new region
           await get().loadGraph();
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false });
         }
       },
@@ -182,15 +267,31 @@ export const useStore = create<AppState>()(
               activeRegionId: newActiveId,
               activeNodeId: newActiveId !== regionId ? state.activeNodeId : null,
               graph: newActiveId !== regionId ? state.graph : null,
-              isLoading: false
+              isLoading: false,
+              // Clear knowledge points state
+              knowledgePoints: [],
+              activeNodeKnowledgePoints: [],
             };
           });
           // Reload graph if the deleted region was the active one
           if (activeRegionId === regionId) {
             await get().loadGraph();
           }
+
+          // Clear BigBang state if the deleted region was being analyzed
+          const { bigBangRegionId } = get();
+          if (bigBangRegionId === regionId) {
+            set({
+              bigBangRegionId: null,
+              bigBangResult: '',
+              bigBangError: null,
+              isBigBangAnalyzing: false,
+              bigBangProgress: '',
+              bigBangAbortController: null,
+            });
+          }
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false });
         }
       },
@@ -204,17 +305,23 @@ export const useStore = create<AppState>()(
             )
           }));
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
         }
       },
 
       setActiveRegion: async (regionId) => {
         try {
           await api.setActiveRegion(regionId);
-          set({ activeRegionId: regionId, activeNodeId: null, graph: null });
+          set({
+            activeRegionId: regionId,
+            activeNodeId: null,
+            graph: null,
+            activeNodeKnowledgePoints: [],
+            knowledgePoints: [],
+          });
           await get().loadGraph();
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
         }
       },
 
@@ -233,15 +340,18 @@ export const useStore = create<AppState>()(
           set(state => ({
             graph,
             isLoading: false,
-            // Auto-select first node if exists
-            activeNodeId: graph.nodes.length > 0 ? graph.nodes[0].id : null,
-            // Sync graph into regions array so activeRegion.graph stays consistent
-            regions: state.regions.map(r =>
-              r.id === activeRegionId ? { ...r, graph } : r
-            )
+            // Preserve current activeNodeId if it still exists in the graph, otherwise select first node
+            activeNodeId: (() => {
+              const currentId = state.activeNodeId;
+              const nodeStillExists = graph.nodes.some(n => n.id === currentId);
+              if (currentId && nodeStillExists) {
+                return currentId;
+              }
+              return graph.nodes.length > 0 ? graph.nodes[0].id : null;
+            })(),
           }));
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false });
         }
       },
@@ -262,25 +372,42 @@ export const useStore = create<AppState>()(
           await get().loadGraph();
           set({ activeNodeId: result.node.id });
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false });
         }
       },
 
       deleteNode: async (regionId, nodeId) => {
         const { activeNodeId } = get();
-        set(state => ({ ...state, isLoading: true, errorQueue: [] }));
+        const deletingActiveNode = activeNodeId === nodeId;
+        set(state => ({ ...state, isLoading: true, errorQueue: [], activeNodeKnowledgePoints: [] }));
         try {
           await api.deleteNode(regionId, nodeId);
           await get().loadGraph();
           // If deleted node was active, select first available node
-          if (activeNodeId === nodeId) {
+          if (deletingActiveNode) {
             const { graph } = get();
             set({ activeNodeId: graph?.nodes[0]?.id || null });
           }
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false });
+        }
+      },
+
+      updateNode: async (regionId, nodeId, title) => {
+        try {
+          await api.updateNode(regionId, nodeId, title);
+          set(state => ({
+            graph: state.graph ? {
+              ...state.graph,
+              nodes: state.graph.nodes.map(n =>
+                n.id === nodeId ? { ...n, title } : n
+              )
+            } : null
+          }));
+        } catch (e) {
+          get().addError(e instanceof Error ? e.message : String(e));
         }
       },
 
@@ -292,9 +419,24 @@ export const useStore = create<AppState>()(
         try {
           const result = await api.createChildNode(activeRegionId, parentId, title);
           await get().loadGraph();
-          set({ activeNodeId: result.node.id });
+
+          // Transform matched_knowledge_points to KnowledgePoint format
+          const matchedKPs = (result.matched_knowledge_points || []).map(
+            (kp: { id: string; content: string; reason?: string }) => ({
+              id: kp.id,
+              title: kp.content.slice(0, 30),
+              content: kp.content,
+              score: 0.8,
+              node_id: result.node.id,
+            })
+          );
+
+          set({
+            activeNodeId: result.node.id,
+            activeNodeKnowledgePoints: matchedKPs
+          });
         } catch (e) {
-          get().addError((e as Error).message);
+          get().addError(e instanceof Error ? e.message : String(e));
           set({ isLoading: false });
         }
       },
@@ -310,14 +452,16 @@ export const useStore = create<AppState>()(
         // Optimistically add user message to local state immediately
         set(state => {
           if (!state.graph) return state;
-          const newGraph = { ...state.graph };
-          const nodeIndex = newGraph.nodes.findIndex(n => n.id === activeNodeId);
+          const nodeIndex = state.graph.nodes.findIndex(n => n.id === activeNodeId);
           if (nodeIndex === -1) return state;
-          const updatedNode = { ...newGraph.nodes[nodeIndex] };
-          updatedNode.messages = [...updatedNode.messages, { role: 'user', content, created_at: new Date().toISOString() }];
-          newGraph.nodes = [...newGraph.nodes];
-          newGraph.nodes[nodeIndex] = updatedNode;
-          return { ...state, graph: newGraph };
+          const newMessage = { role: 'user' as const, content, created_at: new Date().toISOString() };
+          const updatedNode = {
+            ...state.graph.nodes[nodeIndex],
+            messages: [...state.graph.nodes[nodeIndex].messages, newMessage]
+          };
+          const nodes = [...state.graph.nodes];
+          nodes[nodeIndex] = updatedNode;
+          return { ...state, graph: { ...state.graph, nodes } };
         });
 
         const controller = new AbortController();
@@ -325,68 +469,18 @@ export const useStore = create<AppState>()(
 
         try {
           const response = await api.streamMessage(activeRegionId, activeNodeId, content, selectedModel);
-
-          if (!response.ok) {
-            let errorMsg = `HTTP ${response.status}`;
-            try {
-              const errData = await response.json();
-              errorMsg = errData.detail || errorMsg;
-            } catch {}
-            throw new Error(errorMsg);
-          }
-
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('No response body');
-
-          const decoder = new TextDecoder();
           let fullContent = '';
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (controller.signal.aborted) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data === '[DONE]') continue;
-                try {
-                  const sseEvent = JSON.parse(data);
-                  if (sseEvent.event === 'error') {
-                    const errData = JSON.parse(sseEvent.data);
-                    throw new Error(errData.error || 'Stream error');
-                  }
-                  if (sseEvent.data) {
-                    const inner = JSON.parse(sseEvent.data);
-                    const text = inner.content || '';
-                    if (text) {
-                      fullContent += text;
-                      set({ streamingMessage: fullContent });
-                    }
-                  }
-                } catch (parseErr) {
-                  if ((parseErr as Error).message.startsWith('Stream error')) throw parseErr;
-                  try {
-                    const parsed = JSON.parse(data);
-                    const text = parsed.content || parsed.choices?.[0]?.delta?.content || '';
-                    if (text) {
-                      fullContent += text;
-                      set({ streamingMessage: fullContent });
-                    }
-                  } catch {}
-                }
-              }
-            }
-          }
+          await streamSSE(response, controller.signal, (chunk) => {
+            fullContent = chunk;
+            set({ streamingMessage: fullContent });
+          });
 
           if (!controller.signal.aborted) {
             await get().loadGraph();
           }
         } catch (e) {
-          if ((e as Error).name !== 'AbortError') {
-            get().addError((e as Error).message);
+          if (e instanceof Error && e.name !== 'AbortError') {
+            get().addError(e.message);
             set({ isLoading: false, streamingMessage: '', abortController: null });
           }
         } finally {
@@ -420,52 +514,12 @@ export const useStore = create<AppState>()(
 
         try {
           const response = await api.streamAnalyze(regionId);
-          if (!response.ok) throw new Error('Analysis failed');
-
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('No response body');
-
-          const decoder = new TextDecoder();
+          const THROTTLE_MS = 100;
           let fullContent = '';
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (controller.signal.aborted) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data === '[DONE]') continue;
-                try {
-                  const sseEvent = JSON.parse(data);
-                  if (sseEvent.event === 'error') {
-                    const errData = JSON.parse(sseEvent.data);
-                    throw new Error(errData.error || 'Stream error');
-                  }
-                  if (sseEvent.data) {
-                    const inner = JSON.parse(sseEvent.data);
-                    if (inner.content) {
-                      fullContent += inner.content;
-                      set({ bigBangProgress: fullContent });
-                    }
-                  }
-                } catch (parseErr) {
-                  if ((parseErr as Error).message.startsWith('Stream error')) throw parseErr;
-                  try {
-                    const parsed = JSON.parse(data);
-                    const text = parsed.content || '';
-                    if (text) {
-                      fullContent += text;
-                      set({ bigBangProgress: fullContent });
-                    }
-                  } catch {}
-                }
-              }
-            }
-          }
+          await streamSSE(response, controller.signal, (chunk) => {
+            fullContent = chunk;
+            set({ bigBangProgress: fullContent });
+          }, THROTTLE_MS);
 
           if (!controller.signal.aborted) {
             set({
@@ -475,9 +529,9 @@ export const useStore = create<AppState>()(
             });
           }
         } catch (e) {
-          if ((e as Error).name !== 'AbortError') {
+          if (e instanceof Error && e.name !== 'AbortError') {
             set({
-              bigBangError: (e as Error).message,
+              bigBangError: e.message,
               isBigBangAnalyzing: false,
               bigBangProgress: '',
             });
@@ -534,48 +588,10 @@ export const useStore = create<AppState>()(
 
         try {
           const response = await api.getFollowUpSuggestions(regionId, nodeId);
-          if (!response.ok) throw new Error('Failed to get suggestions');
-
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('No response body');
-
-          const decoder = new TextDecoder();
           let fullContent = '';
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (controller.signal.aborted) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data === '[DONE]') continue;
-                try {
-                  const sseEvent = JSON.parse(data);
-                  if (sseEvent.event === 'error') {
-                    const errData = JSON.parse(sseEvent.data);
-                    throw new Error(errData.error || 'Stream error');
-                  }
-                  if (sseEvent.data) {
-                    const inner = JSON.parse(sseEvent.data);
-                    if (inner.content) {
-                      fullContent += inner.content;
-                    }
-                  }
-                } catch (parseErr) {
-                  if ((parseErr as Error).message.startsWith('Stream error')) throw parseErr;
-                  try {
-                    const parsed = JSON.parse(data);
-                    const text = parsed.content || '';
-                    if (text) fullContent += text;
-                  } catch {}
-                }
-              }
-            }
-          }
+          await streamSSE(response, controller.signal, (chunk) => {
+            fullContent = chunk;
+          });
 
           // Parse the response - look for 【摘要】 and 【方向】
           let summary = '';
@@ -599,7 +615,7 @@ export const useStore = create<AppState>()(
             followUpPending: false,
           });
         } catch (e) {
-          if ((e as Error).name !== 'AbortError') {
+          if (e instanceof Error && e.name !== 'AbortError') {
             set({
               followUpPending: false,
               followUpReady: false,
@@ -612,17 +628,32 @@ export const useStore = create<AppState>()(
         }
       },
 
-      clearFollowUpSuggestions: () => {
-        const { followUpAbortController } = get();
-        if (followUpAbortController) followUpAbortController.abort();
-        set({
-          followUpSummary: '',
-          followUpDirections: [],
-          followUpReady: false,
-          followUpPending: false,
-          followUpNodeId: null,
-          followUpAbortController: null,
-        });
+      // ============ Knowledge Point Actions ============
+
+      fetchKnowledgePointsForNode: async (regionId: string, nodeId: string) => {
+        set(state => ({ ...state, knowledgePointsLoading: true, activeNodeKnowledgePoints: [] }));
+        try {
+          const kps = await api.getKnowledgePointsForNode(regionId, nodeId);
+          set({ activeNodeKnowledgePoints: kps, knowledgePointsLoading: false });
+        } catch (e) {
+          get().addError(e instanceof Error ? e.message : String(e));
+          set({ knowledgePointsLoading: false });
+        }
+      },
+
+      clearKnowledgePoints: () => {
+        set({ knowledgePoints: [], activeNodeKnowledgePoints: [] });
+      },
+
+      matchKnowledgePoints: async (regionId: string, query: string) => {
+        set(state => ({ ...state, knowledgePointsLoading: true }));
+        try {
+          const kps = await api.matchKnowledgePoints(regionId, query);
+          set({ knowledgePoints: kps, knowledgePointsLoading: false });
+        } catch (e) {
+          get().addError(e instanceof Error ? e.message : String(e));
+          set({ knowledgePointsLoading: false });
+        }
       },
 
       // ============ Utils ============
@@ -650,12 +681,14 @@ export const useStore = create<AppState>()(
 
       getActiveRegion: () => {
         const { regions, activeRegionId } = get();
-        return findRegion(regions, activeRegionId || '');
+        if (!activeRegionId) return null;
+        return regions.find(r => r.id === activeRegionId) || null;
       },
 
       getActiveNode: () => {
         const { graph, activeNodeId } = get();
-        return findNode(graph, activeNodeId || '');
+        if (!graph || !activeNodeId) return null;
+        return graph.nodes.find(n => n.id === activeNodeId) || null;
       },
     }),
     {

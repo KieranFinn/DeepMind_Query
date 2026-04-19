@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useStore } from '../store';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,19 +12,21 @@ interface BigBangModalProps {
 }
 
 export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
-  const { graph, isBigBangAnalyzing, bigBangProgress, bigBangResult, bigBangError, bigBangRegionId, activeRegionId } = useStore();
+  const { isBigBangAnalyzing, bigBangResult, bigBangError, bigBangRegionId, activeRegionId, startBigBangAnalysis } = useStore();
 
   // Don't render if not open
   if (!isOpen) return null;
 
-  const hasResult = !!bigBangResult;
-  const hasError = !!bigBangError;
-  const isActive = isBigBangAnalyzing && activeRegionId === bigBangRegionId;
-  // Only show result/error/progress if it's for the current region
-  const isForCurrentRegion = bigBangRegionId === activeRegionId;
-  const showResult = isForCurrentRegion && hasResult;
-  const showProgress = isForCurrentRegion && bigBangProgress;
-  const showError = isForCurrentRegion && hasError;
+  // Auto-start analysis if modal opens without one running
+  useEffect(() => {
+    if (isOpen && !isBigBangAnalyzing && !bigBangResult && !bigBangError && activeRegionId) {
+      startBigBangAnalysis(activeRegionId);
+    }
+  }, [isOpen]);
+
+  const isAnalyzing = isBigBangAnalyzing && bigBangRegionId === activeRegionId;
+  const hasResult = !!bigBangResult && bigBangRegionId === activeRegionId;
+  const hasError = !!bigBangError && bigBangRegionId === activeRegionId;
 
   return (
     <div
@@ -39,33 +42,45 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
         <div className="flex items-center justify-between mb-8">
           <div>
             <h2 className="text-2xl font-bold" style={{ color: 'var(--accent)' }}>
-              💥 大爆炸分析
+              大爆炸分析
             </h2>
             <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
               全面解析你的知识结构与思维模式
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="text-2xl hover:opacity-70 transition-opacity"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-3">
+            {isAnalyzing && (
+              <button
+                onClick={onClose}
+                className="px-3 py-1 rounded-lg text-sm hover:opacity-70 transition-opacity"
+                style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+                title="最小化到后台继续分析"
+              >
+                后台
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-2xl hover:opacity-70 transition-opacity"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              X
+            </button>
+          </div>
         </div>
 
         {/* Analyzing in progress */}
-        {isActive && (
+        {isAnalyzing && !hasResult && (
           <div className="text-center py-12">
-            <div className="text-4xl mb-4 animate-pulse">🔮</div>
+            <div className="text-4xl mb-4 animate-pulse">Analysing...</div>
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
               正在分析你的知识网络...
             </p>
           </div>
         )}
 
-        {/* Streaming content */}
-        {(showProgress || showResult) && (
+        {/* Result */}
+        {hasResult && (
           <div className="space-y-4">
             <div
               className="p-4 rounded-xl prose prose-sm max-w-none"
@@ -76,72 +91,30 @@ export default function BigBangModal({ isOpen, onClose }: BigBangModalProps) {
                 lineHeight: '1.7'
               }}
             >
-              {showProgress && !showResult ? (
-                <div className="flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
-                  <span className="animate-pulse">🔮</span>
-                  <span>正在深度分析中...</span>
-                </div>
-              ) : showResult ? (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex, rehypeHighlight]}
-                >
-                  {bigBangResult}
-                </ReactMarkdown>
-              ) : null}
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex, rehypeHighlight]}
+              >
+                {bigBangResult}
+              </ReactMarkdown>
             </div>
 
-            {/* Action */}
             <button
               onClick={onClose}
               className="w-full py-3 rounded-xl font-medium transition-all hover:scale-[1.02]"
               style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-primary)' }}
             >
-              继续探索 →
+              继续探索
             </button>
           </div>
         )}
 
         {/* Error state */}
-        {showError && (
+        {hasError && (
           <div className="text-center py-12">
-            <div className="text-4xl mb-4">❌</div>
+            <div className="text-4xl mb-4">X</div>
             <p className="text-sm" style={{ color: 'var(--error)' }}>
               分析失败: {bigBangError}
-            </p>
-            <button
-              onClick={onClose}
-              className="mt-4 px-6 py-2 rounded-xl font-medium"
-              style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-primary)' }}
-            >
-              关闭
-            </button>
-          </div>
-        )}
-
-        {/* Empty state - no analysis yet */}
-        {!bigBangProgress && !hasResult && !hasError && !isActive && graph && graph.nodes.length > 0 && (
-          <div className="text-center py-12">
-            <div className="text-4xl mb-4">🌌</div>
-            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              点击上方按钮开始深度分析
-            </p>
-            <button
-              onClick={onClose}
-              className="mt-4 px-6 py-2 rounded-xl font-medium"
-              style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-primary)' }}
-            >
-              关闭
-            </button>
-          </div>
-        )}
-
-        {/* No graph data */}
-        {!bigBangProgress && !hasResult && !hasError && !isActive && (!graph || graph.nodes.length === 0) && (
-          <div className="text-center py-12">
-            <div className="text-4xl mb-4">🌌</div>
-            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              当前知识区为空，请先创建会话
             </p>
             <button
               onClick={onClose}

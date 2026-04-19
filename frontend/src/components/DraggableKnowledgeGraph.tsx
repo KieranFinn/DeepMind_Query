@@ -1,26 +1,117 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { useNodesState, useEdgesState } from 'reactflow';
 import ReactFlow, { Node, Controls, Background, BackgroundVariant } from 'reactflow';
+import dagre from 'dagre';
 import 'reactflow/dist/style.css';
 import NodeCard from './NodeCard';
+import KnowledgePointCard from './KnowledgePointCard';
 import { useStore } from '../store';
 
-const nodeTypes = { nodeCard: NodeCard };
+const nodeTypes = { nodeCard: NodeCard, knowledgePoint: KnowledgePointCard };
+
+// Simple force-directed layout
+function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[] {
+  if (nodes.length === 0) return nodes;
+
+  const nodesCopy = nodes.map(n => ({
+    ...n,
+    position: { ...n.position },
+    vx: 0,
+    vy: 0,
+  }));
+
+  const repulsionStrength = 5000;
+  const attractionStrength = 0.05;
+  const damping = 0.9;
+  const centerX = 160;
+  const centerY = 120;
+
+  // Build adjacency for attraction calculation
+  const adjacency = new Map<string, Set<string>>();
+  nodesCopy.forEach(n => adjacency.set(n.id, new Set()));
+  edges.forEach(e => {
+    adjacency.get(e.source)?.add(e.target);
+    adjacency.get(e.target)?.add(e.source);
+  });
+
+  for (let iter = 0; iter < iterations; iter++) {
+    // Repulsion between all nodes
+    for (let i = 0; i < nodesCopy.length; i++) {
+      for (let j = i + 1; j < nodesCopy.length; j++) {
+        const dx = nodesCopy[j].position.x - nodesCopy[i].position.x;
+        const dy = nodesCopy[j].position.y - nodesCopy[i].position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const force = repulsionStrength / (dist * dist);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        nodesCopy[i].vx -= fx;
+        nodesCopy[i].vy -= fy;
+        nodesCopy[j].vx += fx;
+        nodesCopy[j].vy += fy;
+      }
+    }
+
+    // Attraction along edges
+    edges.forEach(edge => {
+      const source = nodesCopy.find(n => n.id === edge.source);
+      const target = nodesCopy.find(n => n.id === edge.target);
+      if (!source || !target) return;
+      const dx = target.position.x - source.position.x;
+      const dy = target.position.y - source.position.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const force = attractionStrength * dist;
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      source.vx += fx;
+      source.vy += fy;
+      target.vx -= fx;
+      target.vy -= fy;
+    });
+
+    // Center gravity
+    nodesCopy.forEach(node => {
+      node.vx += (centerX - node.position.x) * 0.01;
+      node.vy += (centerY - node.position.y) * 0.01;
+    });
+
+    // Apply velocities with damping
+    nodesCopy.forEach(node => {
+      node.position.x += node.vx;
+      node.position.y += node.vy;
+      node.vx *= damping;
+      node.vy *= damping;
+    });
+  }
+
+  // Normalize positions to be non-negative and centered
+  let minX = Infinity, minY = Infinity;
+  nodesCopy.forEach(n => {
+    minX = Math.min(minX, n.position.x);
+    minY = Math.min(minY, n.position.y);
+  });
+  const offsetX = minX < 0 ? -minX + 20 : 20;
+  const offsetY = minY < 0 ? -minY + 20 : 20;
+
+  return nodesCopy.map(n => ({
+    ...n,
+    position: { x: n.position.x + offsetX, y: n.position.y + offsetY },
+  }));
+}
 
 interface DraggableKnowledgeGraphProps {
   sidebarCollapsed: boolean;
 }
 
 export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableKnowledgeGraphProps) {
-  const { graph, activeNodeId, getActiveRegion, createChildNode, setActiveNode, isBigBangAnalyzing, bigBangResult, bigBangRegionId, activeRegionId } = useStore();
+  const { graph, activeNodeId, getActiveRegion, createChildNode, setActiveNode, isBigBangAnalyzing, bigBangResult, bigBangRegionId, activeRegionId, activeNodeKnowledgePoints, fetchKnowledgePointsForNode } = useStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   const [isDocked, setIsDocked] = useState(true);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [isExpanding, setIsExpanding] = useState(false);
-  const [expandOrigin, setExpandOrigin] = useState({ x: 0, y: 0 });
+  const [layoutMode, setLayoutMode] = useState<'dagre' | 'force'>('dagre');
   const dragState = useRef<{
     isDragging: boolean;
     startMouseX: number;
@@ -29,7 +120,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     startPosY: number;
     hasMoved: boolean;
     element: HTMLElement | null;
-    shouldUndock: boolean;
+    currentMouseX: number;
+    currentMouseY: number;
   }>({
     isDragging: false,
     startMouseX: 0,
@@ -38,12 +130,14 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     startPosY: 0,
     hasMoved: false,
     element: null,
-    shouldUndock: false,
+    currentMouseX: 0,
+    currentMouseY: 0,
   });
-  const draggedFlag = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const rfInstance = useRef<any>(null);
 
   const activeRegion = getActiveRegion();
+  const nodeCount = graph?.nodes.length || 0;
   const SIDEBAR_WIDTH = sidebarCollapsed ? 32 : 280;
   const DOCKED_HEIGHT = 160;
 
@@ -72,6 +166,9 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     const yStep = 60;
     const xStep = 100;
 
+    // Track positions of session nodes for KP placement
+    const nodePositions: Map<string, { x: number; y: number }> = new Map();
+
     function layoutNode(nodeId: string, depth: number, index: number, siblingCount: number) {
       const node = currentGraph.nodes.find(n => String(n.id) === nodeId);
       if (!node) return;
@@ -96,13 +193,16 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         },
       });
 
+      // Store position for KP placement
+      nodePositions.set(nodeIdStr, { x: nodeX, y: nodeY });
+
       const childEdges = currentGraph.edges.filter(e => String(e.source) === nodeIdStr);
       childEdges.forEach((edge, i) => {
         newEdges.push({
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          type: 'smoothstep',
+          type: 'default',
           style: {
             stroke: activeRegion?.color || 'var(--accent)',
             strokeWidth: 2
@@ -117,9 +217,52 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       layoutNode(String(root.id), 0, i, rootNodes.length);
     });
 
+    // Add knowledge point nodes for the active node
+    const activeNodePos = activeNodeId ? nodePositions.get(String(activeNodeId)) : null;
+    if (activeNodePos && activeNodeKnowledgePoints.length > 0) {
+      const kpCount = activeNodeKnowledgePoints.length;
+      const kpStartX = activeNodePos.x + 120; // Place to the right of the session node
+      const kpStartY = activeNodePos.y - (kpCount * 25);
+
+      activeNodeKnowledgePoints.forEach((kp, i) => {
+        const kpId = `kp-${kp.id}`;
+        newNodes.push({
+          id: kpId,
+          type: 'knowledgePoint',
+          position: { x: kpStartX, y: kpStartY + i * 55 },
+          data: {
+            label: kp.title,
+            content: kp.content,
+            score: kp.score,
+            sourceNodeId: String(activeNodeId),
+          },
+        });
+
+        // Add edge from session node to KP
+        newEdges.push({
+          id: `kp-edge-${kp.id}`,
+          source: String(activeNodeId),
+          target: kpId,
+          type: 'default',
+          style: {
+            stroke: 'var(--accent)',
+            strokeWidth: 1.5,
+            strokeDasharray: '5,5',
+          },
+        });
+      });
+    }
+
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [graph, activeNodeId, activeRegion, setNodes, setEdges]);
+  }, [graph, activeNodeId, activeRegion, activeNodeKnowledgePoints, setNodes, setEdges]);
+
+  // Fetch knowledge points when active node changes
+  useEffect(() => {
+    if (activeNodeId && activeRegionId) {
+      fetchKnowledgePointsForNode(activeRegionId, String(activeNodeId));
+    }
+  }, [activeNodeId, activeRegionId, fetchKnowledgePointsForNode]);
 
   const handleNodeClick = useCallback(
     async (_: React.MouseEvent, node: Node) => {
@@ -139,6 +282,65 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     [graph, createChildNode]
   );
 
+  const handleCenterOnNode = useCallback(() => {
+    if (!rfInstance.current || !activeNodeId) return;
+
+    try {
+      const node = rfInstance.current.getNode(activeNodeId);
+      if (node && node.position) {
+        rfInstance.current.setCenter(
+          node.position.x + 60, // center of node width (approximate)
+          node.position.y + 20, // center of node height (approximate)
+          { zoom: 1, duration: 300 }
+        );
+      } else {
+        // Fallback: fit view if node not found
+        rfInstance.current.fitView({ duration: 300 });
+      }
+    } catch (e) {
+      console.warn('Center on node failed:', e);
+      try {
+        rfInstance.current?.fitView({ duration: 300 });
+      } catch {}
+    }
+  }, [activeNodeId]);
+
+  const layoutGraph = useCallback(() => {
+    if (!graph || graph.nodes.length === 0) return;
+
+    if (layoutMode === 'force') {
+      // Force-directed layout
+      setNodes(nodes => applyForceLayout(nodes, graph.edges));
+    } else {
+      // Dagre hierarchical layout
+      const g = new dagre.graphlib.Graph();
+      g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 100 });
+      g.setDefaultEdgeLabel(() => ({}));
+
+      // Add nodes
+      graph.nodes.forEach(node => {
+        g.setNode(node.id, { width: 150, height: 50 });
+      });
+
+      // Add edges
+      graph.edges.forEach(edge => {
+        g.setEdge(edge.source, edge.target);
+      });
+
+      // Calculate layout
+      dagre.layout(g);
+
+      // Update node positions
+      setNodes(nodes => nodes.map(node => {
+        const pos = g.node(node.id);
+        return {
+          ...node,
+          position: { x: pos.x - 75, y: pos.y - 25 }
+        };
+      }));
+    }
+  }, [graph, setNodes, layoutMode]);
+
   const handleMouseDown = useCallback((e: React.MouseEvent, el: HTMLElement) => {
     if ((e.target as HTMLElement).closest('.react-flow__controls') ||
         (e.target as HTMLElement).closest('button')) return;
@@ -153,7 +355,8 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       startPosY: parseInt(el.style.top) || position.y,
       hasMoved: false,
       element: el,
-      shouldUndock: false,
+      currentMouseX: e.clientX,
+      currentMouseY: e.clientY,
     };
     el.style.cursor = 'grabbing';
     el.style.transition = 'none';
@@ -166,53 +369,59 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     const dx = e.clientX - drag.startMouseX;
     const dy = e.clientY - drag.startMouseY;
 
+    drag.currentMouseX = e.clientX;
+    drag.currentMouseY = e.clientY;
+
     if (!drag.hasMoved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
       drag.hasMoved = true;
-      // Mark for undocking after drag ends
-      if (isDocked) {
-        dragState.current.shouldUndock = true;
-      }
     }
 
     drag.element.style.left = `${drag.startPosX + dx}px`;
     drag.element.style.top = `${drag.startPosY + dy}px`;
-  }, [isDocked]);
+  }, []);
 
   const handleMouseUp = useCallback(() => {
     const drag = dragState.current;
     if (!drag.isDragging) return;
 
     drag.isDragging = false;
-    const wasDragged = drag.hasMoved;
-    const shouldUndock = drag.shouldUndock;
-    const dragStartX = drag.startMouseX;
-    const dragStartY = drag.startMouseY;
 
     if (drag.element) {
       drag.element.style.cursor = 'grab';
       if (drag.hasMoved) {
-        const newX = parseInt(drag.element.style.left);
-        const newY = parseInt(drag.element.style.top);
-        setPosition({ x: newX, y: newY });
+        if (!isDocked) {
+          // Update position state to match the DOM position where we dragged to
+          const finalX = parseInt(drag.element.style.left);
+          const finalY = parseInt(drag.element.style.top);
+          setPosition({ x: finalX, y: finalY });
+        } else {
+          // Docked mode: check if dragged back to dock area
+          const newX = parseInt(drag.element.style.left);
+          const newY = parseInt(drag.element.style.top);
 
-        // Check if dragged back to dock area
-        const windowHeight = window.innerHeight;
-        if (newX < 100 && newY > windowHeight - 300) {
-          setIsDocked(true);
-        } else if (shouldUndock) {
-          // Set expand origin to where user grabbed (bottom-left of docked graph)
-          setExpandOrigin({ x: dragStartX, y: dragStartY });
-          setIsExpanding(true);
-          setIsDocked(false);
+          const windowHeight = window.innerHeight;
+          const shouldUndock = !(newX < 100 && newY > windowHeight - 300);
+
+          if (shouldUndock) {
+            // Undock: use flushSync, snap to cursor
+            flushSync(() => {
+              setPosition({ x: drag.currentMouseX - 16, y: drag.currentMouseY - 16 });
+              setIsDocked(false);
+            });
+          } else {
+            // Normal docked drag: update position but stay docked
+            setIsDocked(true);
+            // Update position so if we undock later, we start from here
+            const finalX = drag.startPosX + (drag.currentMouseX - drag.startMouseX);
+            const finalY = drag.startPosY + (drag.currentMouseY - drag.startMouseY);
+            setPosition({ x: finalX, y: finalY });
+          }
         }
       }
     }
 
     drag.hasMoved = false;
-    drag.shouldUndock = false;
-    draggedFlag.current = wasDragged;
-    setTimeout(() => { draggedFlag.current = false; }, 0);
-  }, []);
+  }, [isDocked]);
 
   useEffect(() => {
     window.addEventListener('mousemove', handleMouseMove);
@@ -249,7 +458,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         }}
         onClick={(e) => {
           e.stopPropagation();
-          if (!draggedFlag.current) {
+          if (!dragState.current.hasMoved) {
             setIsCollapsed(false);
           }
         }}
@@ -334,13 +543,13 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             图谱
           </span>
           <span className="text-xs" style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>
-            {graph?.nodes.length || 0}
+            {nodeCount}
           </span>
         </div>
 
         {/* Mini Graph */}
         <div className="w-full" style={{ height: DOCKED_HEIGHT - 36 }}>
-          {!graph || graph.nodes.length === 0 ? (
+          {nodeCount === 0 ? (
             <div
               className="w-full h-full flex items-center justify-center"
               style={{ color: 'var(--text-muted)', fontSize: '11px' }}
@@ -374,37 +583,6 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
   }
 
   // Floating mode
-  const floatingStyle = isExpanding ? {
-    left: expandOrigin.x - 16,
-    top: expandOrigin.y - 16,
-    width: '32px',
-    height: '32px',
-    backgroundColor: 'var(--bg-secondary)',
-    border: '1px solid var(--border)',
-    borderRadius: '8px',
-    zIndex: 50,
-    cursor: 'grab',
-    animation: 'expandFromAnchor 0.3s ease-out forwards',
-    transformOrigin: 'top left',
-  } : {
-    left: position.x ?? SIDEBAR_WIDTH,
-    top: position.y ?? 100,
-    width: '320px',
-    height: '240px',
-    backgroundColor: 'var(--bg-secondary)',
-    border: '1px solid var(--border)',
-    zIndex: 50,
-    cursor: 'grab',
-  };
-
-  // After expansion animation, clear the expanding state
-  useEffect(() => {
-    if (isExpanding) {
-      const timer = setTimeout(() => setIsExpanding(false), 300);
-      return () => clearTimeout(timer);
-    }
-  }, [isExpanding]);
-
   return (
     <div
       ref={containerRef}
@@ -417,8 +595,17 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         }
         containerRef.current && handleMouseDown(e, containerRef.current);
       }}
-      className={`fixed rounded-xl shadow-2xl overflow-hidden ${isExpanding ? '' : ''}`}
-      style={floatingStyle}
+      className="fixed rounded-xl shadow-2xl overflow-hidden"
+      style={{
+        left: position.x ?? SIDEBAR_WIDTH,
+        top: position.y ?? 100,
+        width: '320px',
+        height: '240px',
+        backgroundColor: 'var(--bg-secondary)',
+        border: '1px solid var(--border)',
+        zIndex: 50,
+        cursor: 'grab',
+      }}
     >
       {/* Header */}
       <div
@@ -426,6 +613,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         style={{
           backgroundColor: 'var(--bg-tertiary)',
           borderBottom: '1px solid var(--border)',
+          pointerEvents: 'none', // Let parent handle drags
         }}
       >
         <div className="flex items-center gap-2">
@@ -435,6 +623,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             style={{
               backgroundColor: 'var(--bg-hover)',
               color: 'var(--text-muted)',
+              pointerEvents: 'auto', // Re-enable click on button
             }}
             title="收起"
           >
@@ -446,10 +635,28 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             style={{
               backgroundColor: 'var(--bg-hover)',
               color: 'var(--text-muted)',
+              pointerEvents: 'auto', // Re-enable click on button
             }}
             title="停靠"
           >
             ↙
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setLayoutMode(m => m === 'dagre' ? 'force' : 'dagre');
+              layoutGraph();
+              setTimeout(() => handleCenterOnNode(), 50);
+            }}
+            className="text-xs px-2 py-1 rounded hover:opacity-80"
+            style={{
+              backgroundColor: layoutMode === 'force' ? 'var(--accent)' : 'var(--bg-hover)',
+              color: layoutMode === 'force' ? 'var(--bg-primary)' : 'var(--text-muted)',
+              pointerEvents: 'auto', // Re-enable click on button
+            }}
+            title={layoutMode === 'dagre' ? '切换到力导向布局' : '切换到层级布局'}
+          >
+            {layoutMode === 'dagre' ? '⊞' : '◎'}
           </button>
           {activeRegion && (
             <>
@@ -464,13 +671,13 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           )}
         </div>
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          {graph?.nodes.length || 0}
+          {nodeCount}
         </span>
       </div>
 
       {/* Graph */}
-      <div className="w-full h-full">
-        {!graph || graph.nodes.length === 0 ? (
+      <div className="w-full h-full" style={{ position: 'relative' }}>
+        {nodeCount === 0 ? (
           <div
             className="w-full h-full flex items-center justify-center"
             style={{ color: 'var(--text-muted)', fontSize: '12px' }}
@@ -478,26 +685,46 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             空
           </div>
         ) : (
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeClick={handleNodeClick}
-            onNodeDoubleClick={handleNodeDoubleClick}
-            nodeTypes={nodeTypes}
-            fitView
-            minZoom={0.1}
-            maxZoom={1.5}
-          >
-            <Controls showZoom={false} showFitView={false} showInteractive={false} />
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={16}
-              size={1}
-              color="var(--border)"
-            />
-          </ReactFlow>
+          <>
+            <ReactFlow
+              ref={rfInstance}
+              onInit={(instance) => { rfInstance.current = instance; }}
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={handleNodeClick}
+              onNodeDoubleClick={handleNodeDoubleClick}
+              nodeTypes={nodeTypes}
+              fitView
+              minZoom={0.1}
+              maxZoom={1.5}
+            >
+              <Controls showZoom={false} showFitView={false} showInteractive={false} />
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={16}
+                size={1}
+                color="var(--border)"
+              />
+            </ReactFlow>
+            {/* Center on active node button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); handleCenterOnNode(); }}
+              className="absolute w-7 h-7 flex items-center justify-center rounded hover:opacity-80"
+              style={{
+                backgroundColor: 'var(--bg-hover)',
+                color: 'var(--text-muted)',
+                bottom: '8px',
+                left: '8px',
+                zIndex: 10,
+                pointerEvents: 'auto', // Re-enable click on button
+              }}
+              title="回到会话"
+            >
+              ◎
+            </button>
+          </>
         )}
       </div>
     </div>

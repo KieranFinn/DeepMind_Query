@@ -60,3 +60,34 @@ def execute_write(query: str, params: tuple = None):
     with get_cursor() as cursor:
         cursor.execute(query, params or ())
         return cursor.lastrowid
+
+
+# Knowledge Points table creation
+KNOWLEDGE_POINTS_TABLE = """
+CREATE TABLE IF NOT EXISTS knowledge_points (
+    id VARCHAR(36) PRIMARY KEY,
+    content TEXT NOT NULL,
+    summary VARCHAR(500),
+    source_session_id VARCHAR(36),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)
+"""
+
+KNOWLEDGE_POINT_SESSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS knowledge_point_sessions (
+    id VARCHAR(36) PRIMARY KEY,
+    knowledge_point_id VARCHAR(36) NOT NULL,
+    session_id VARCHAR(36) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (knowledge_point_id) REFERENCES knowledge_points(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES nodes(id) ON DELETE CASCADE
+)
+"""
+
+
+def init_knowledge_points_tables():
+    """Initialize knowledge points tables if they don't exist."""
+    with get_cursor() as cursor:
+        cursor.execute(KNOWLEDGE_POINTS_TABLE)
+        cursor.execute(KNOWLEDGE_POINT_SESSIONS_TABLE)

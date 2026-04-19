@@ -1,16 +1,96 @@
+"""API Routes - Thin layer for parameter validation and response formatting"""
 import uuid
 import json
+from collections.abc import AsyncGenerator
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
+
 from store import store
+
+
+EXTRACTION_PROMPT = """你是一位知识管理专家。请从以下对话中提取关键知识点（实体、概念、技术等）。
+
+要求：
+- 只提取真正有价值的知识，不要提取通用常识
+- 每个知识点简洁明了，20字以内
+- 以JSON数组格式输出，每个元素是知识点字符串
+- 如果没有有价值的知识点，返回空数组
+
+对话内容：
+{conversation}
+"""
+
+
+MATCH_PROMPT = """你是一位知识匹配专家。用户要开始一个新对话。
+
+用户问题：{question}
+
+相关知识点：
+{knowledge_points_list}
+
+请找出与用户问题最相关的知识点（最多5个）。
+
+要求：
+- 只返回确实相关的知识点
+- 按相关度排序
+- 以JSON数组格式输出，每个元素包含知识点ID和相关性理由
+- 如果没有相关的，返回空数组
+"""
+
+
+MERGE_CHECK_PROMPT = """判断以下两个知识点是否表达同一个概念：
+
+知识点A: {existing_content}
+知识点B: {new_content}
+
+如果是同一概念，返回true和合并后的表述（选择一个更准确、更完整的表述）；
+如果不是，返回false。
+
+以JSON格式输出：{{"merge": true/false, "merged_content": "..."}}
+"""
+
+
+BATCH_MERGE_PROMPT = """你是一位知识管理专家。请分析以下知识点列表，找出可以合并的相似概念对。
+
+知识点列表：
+{knowledge_points_list}
+
+对于每对相似知识点，判断它们是否表达同一个概念。
+如果是，指定一个更好的合并表述。
+
+以JSON数组格式输出，每对合并包含两个原始知识点的ID、是否合并、以及合并后的表述：
+[{{"id1": "...", "id2": "...", "merge": true/false, "merged_content": "..."}}]
+
+如果没有发现可合并的对，返回空数组。只返回确实相似的对，不要返回不相似的对。
+"""
+
+
+async def stream_response(model: str, messages: list[dict], region_id: str = None, node_id: str = None) -> AsyncGenerator[dict, None]:
+    """Streaming helper that yields SSE events and persists messages on completion."""
+    full_response = ""
+    try:
+        async for chunk in llm_service.stream_chat(model, messages):
+            full_response += chunk
+            yield {"event": "message", "data": json.dumps({"content": chunk})}
+        if full_response and region_id and node_id:
+            session_service.add_message(region_id, node_id, "assistant", full_response)
+    except Exception as e:
+        yield {"event": "error", "data": json.dumps({"error": str(e)})}
 from models import (
     CreateRegionRequest,
     CreateNodeRequest,
     SendMessageRequest,
     KnowledgeRegion,
     Graph,
+    MergeCheckRequest,
+    MergeSuggestion,
+    MergeCheckResponse,
+    BatchMergePair,
+    BatchMergeResponse,
 )
-from llm import stream_chat
+from services.region_service import region_service
+from services.session_service import session_service
+from services.llm_service import llm_service
 
 router = APIRouter(prefix="/api", tags=["knowledge-regions"])
 
@@ -20,63 +100,42 @@ router = APIRouter(prefix="/api", tags=["knowledge-regions"])
 @router.get("/regions", response_model=list[KnowledgeRegion])
 async def get_all_regions():
     """Get all knowledge regions"""
-    async with await store.lock():
-        return store.get_all_regions()
+    return region_service.get_all_regions()
 
 
 @router.post("/regions", response_model=KnowledgeRegion)
 async def create_region(req: CreateRegionRequest):
     """Create a new knowledge region"""
-    async with await store.lock():
-        region = store.create_region(
-            name=req.name,
-            description=req.description or "",
-            color=req.color or "#d4a574",
-            tags=req.tags or []
-        )
-        # First node is created automatically inside create_region
-        return region
-
-
-@router.get("/regions/{region_id}", response_model=KnowledgeRegion)
-async def get_region(region_id: uuid.UUID):
-    """Get a specific region"""
-    async with await store.lock():
-        region = store.get_region(str(region_id))
-        if not region:
-            raise HTTPException(status_code=404, detail="Region not found")
-        return region
+    return region_service.create_region(
+        name=req.name,
+        description=req.description or "",
+        color=req.color or "#d4a574",
+        tags=req.tags or [],
+    )
 
 
 @router.delete("/regions/{region_id}")
 async def delete_region(region_id: uuid.UUID):
     """Delete a region"""
-    async with await store.lock():
-        if not store.delete_region(str(region_id)):
-            raise HTTPException(status_code=404, detail="Region not found")
-        return {"success": True}
+    if not region_service.delete_region(str(region_id)):
+        raise HTTPException(status_code=404, detail="Region not found")
+    return {"success": True}
 
 
 @router.patch("/regions/{region_id}")
 async def update_region(region_id: uuid.UUID, name: str = Query(..., description="New name for the region")):
     """Update region name"""
-    if not name or not name.strip():
-        raise HTTPException(status_code=400, detail="Name cannot be empty")
-    if len(name.strip()) > 100:
-        raise HTTPException(status_code=400, detail="Name cannot exceed 100 characters")
-    async with await store.lock():
-        if not store.update_region_name(str(region_id), name.strip()):
-            raise HTTPException(status_code=404, detail="Region not found")
-        return {"success": True}
+    if not region_service.update_region_name(str(region_id), name):
+        raise HTTPException(status_code=400, detail="Name cannot be empty or exceed 100 characters")
+    return {"success": True}
 
 
 @router.post("/regions/{region_id}/active")
 async def set_active_region(region_id: uuid.UUID):
     """Set active region"""
-    async with await store.lock():
-        if not store.set_active_region(str(region_id)):
-            raise HTTPException(status_code=404, detail="Region not found")
-        return {"success": True}
+    if not region_service.set_active_region(str(region_id)):
+        raise HTTPException(status_code=404, detail="Region not found")
+    return {"success": True}
 
 
 # ============ Graph / Nodes ============
@@ -84,50 +143,76 @@ async def set_active_region(region_id: uuid.UUID):
 @router.get("/regions/{region_id}/graph", response_model=Graph)
 async def get_graph(region_id: uuid.UUID):
     """Get the graph for a region"""
-    async with await store.lock():
-        graph = store.get_graph(str(region_id))
-        if not graph:
-            raise HTTPException(status_code=404, detail="Region not found")
-        return graph
+    graph = session_service.get_graph(str(region_id))
+    if not graph:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return graph
 
 
 @router.get("/regions/{region_id}/graph/nodes", response_model=list)
 async def get_nodes(region_id: uuid.UUID):
     """Get all nodes in a region's graph"""
-    async with await store.lock():
-        graph = store.get_graph(str(region_id))
-        if not graph:
-            raise HTTPException(status_code=404, detail="Region not found")
-        return graph.nodes
+    graph = session_service.get_graph(str(region_id))
+    if not graph:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return graph.nodes
 
 
 @router.post("/regions/{region_id}/graph/nodes", response_model=dict)
 async def create_node(region_id: uuid.UUID, req: CreateNodeRequest):
     """Create a new node (session) in the graph"""
-    async with await store.lock():
-        node = store.create_node(str(region_id), req.title, req.parent_id)
-        if not node:
-            raise HTTPException(status_code=404, detail="Region not found")
-        return {"node": node, "success": True}
+    if not region_service.validate_region_exists(str(region_id)):
+        raise HTTPException(status_code=404, detail="Region not found")
+    node = session_service.create_root_node(str(region_id), req.title)
+    return {"node": node, "success": True}
 
 
 @router.get("/regions/{region_id}/graph/nodes/{node_id}")
 async def get_node(region_id: uuid.UUID, node_id: uuid.UUID):
     """Get a specific node"""
-    async with await store.lock():
-        node = store.get_node(str(region_id), str(node_id))
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
-        return node
+    node = session_service.get_node(str(region_id), str(node_id))
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return node
 
 
 @router.delete("/regions/{region_id}/graph/nodes/{node_id}")
 async def delete_node(region_id: uuid.UUID, node_id: uuid.UUID):
     """Delete a node"""
-    async with await store.lock():
-        if not store.delete_node(str(region_id), str(node_id)):
-            raise HTTPException(status_code=404, detail="Node not found")
-        return {"success": True}
+    if not session_service.delete_node(str(region_id), str(node_id)):
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"success": True}
+
+
+@router.patch("/regions/{region_id}/graph/nodes/{node_id}")
+async def update_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str = Query(..., description="New title for the node")):
+    """Update node title"""
+    if not session_service.update_node_title(str(region_id), str(node_id), title):
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"success": True}
+
+
+@router.get("/regions/{region_id}/graph/nodes/{node_id}/knowledge")
+async def get_node_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
+    """Get knowledge points linked to a specific node"""
+    node = session_service.get_node(str(region_id), str(node_id))
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    # Get knowledge points linked to this session via knowledge_point_sessions
+    knowledge_points = store.get_knowledge_points_for_session(str(node_id))
+
+    # Format response to match frontend KnowledgePoint interface
+    return [
+        {
+            "id": kp.id,
+            "title": kp.summary or kp.content[:30],
+            "content": kp.content,
+            "score": None,  # Historical KPs don't have relevance scores
+            "node_id": str(node_id)
+        }
+        for kp in knowledge_points
+    ]
 
 
 # ============ Messages ============
@@ -138,74 +223,116 @@ async def send_message(region_id: uuid.UUID, node_id: uuid.UUID, req: SendMessag
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
-    async with await store.lock():
-        node = store.get_node(str(region_id), str(node_id))
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
+    node = session_service.get_node(str(region_id), str(node_id))
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
 
-        # Build context from node's messages
-        messages = []
-        for msg in node.messages:
-            messages.append({"role": msg.role, "content": msg.content})
+    messages = session_service.get_conversation_context(str(region_id), str(node_id))
+    session_service.add_message(str(region_id), str(node_id), "user", req.content.strip())
+    messages.append({"role": "user", "content": req.content.strip()})
 
-        # Add user message
-        store.add_message_to_node(str(region_id), str(node_id), "user", req.content.strip())
-        messages.append({"role": "user", "content": req.content.strip()})
-
-    async def generate():
-        full_response = ""
-        try:
-            async for chunk in stream_chat(req.model, messages):
-                full_response += chunk
-                yield {"event": "message", "data": json.dumps({"content": chunk})}
-
-            if full_response:
-                async with await store.lock():
-                    store.add_message_to_node(str(region_id), str(node_id), "assistant", full_response)
-        except Exception as e:
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
-
-    return EventSourceResponse(generate())
+    return EventSourceResponse(stream_response(req.model, messages, str(region_id), str(node_id)))
 
 
 @router.post("/regions/{region_id}/graph/nodes/{node_id}/children", response_model=dict)
 async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str = Query(None, description="Title for the new child node")):
     """Create a child node (branch) - creates edge from parent to child"""
-    async with await store.lock():
-        parent = store.get_node(str(region_id), str(node_id))
-        if not parent:
-            raise HTTPException(status_code=404, detail="Node not found")
+    # Get parent node for knowledge matching
+    parent = session_service.get_node(str(region_id), str(node_id))
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent node not found")
 
-        child = store.create_node(str(region_id), title, parent_id=str(node_id))
-        if not child:
-            raise HTTPException(status_code=404, detail="Failed to create child node")
+    # Create the child node
+    child = session_service.create_child_node(str(region_id), str(node_id), title)
+    if not child:
+        raise HTTPException(status_code=404, detail="Node not found or failed to create child")
 
-        return {"node": child, "success": True}
+    # Match knowledge points from parent's first user message
+    matched_knowledge_points = []
+    if parent.messages:
+        # Get the first user message as the question
+        question = None
+        for msg in parent.messages:
+            if msg.role == "user":
+                question = msg.content
+                break
+
+        if question:
+            # Get all knowledge points for this region
+            knowledge_points = store.get_knowledge_points_for_region(str(region_id))
+
+            if knowledge_points:
+                # Build knowledge points list for the prompt
+                knowledge_points_list = []
+                for kp in knowledge_points:
+                    knowledge_points_list.append(f"ID: {kp['id']}\n内容: {kp['content']}")
+
+                kp_list_str = "\n\n".join(knowledge_points_list)
+
+                # Call LLM to find relevant knowledge points
+                prompt = MATCH_PROMPT.format(
+                    question=question,
+                    knowledge_points_list=kp_list_str
+                )
+                llm_messages = [
+                    {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
+                    {"role": "user", "content": prompt}
+                ]
+
+                # Call LLM (non-streaming)
+                try:
+                    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+
+                    # Parse LLM response
+                    matches = []
+                    try:
+                        import re
+                        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
+                        if json_match:
+                            matches = json.loads(json_match.group())
+                        else:
+                            matches = json.loads(llm_response)
+                    except json.JSONDecodeError:
+                        pass
+
+                    # Build final response with content
+                    kp_dict = {kp['id']: kp for kp in knowledge_points}
+                    for match in matches[:5]:  # Limit to 5
+                        if isinstance(match, dict) and 'id' in match:
+                            kp_id = match['id']
+                            if kp_id in kp_dict:
+                                matched_knowledge_points.append({
+                                    "id": kp_id,
+                                    "content": kp_dict[kp_id]['content'],
+                                    "reason": match.get('reason', '')
+                                })
+                except Exception:
+                    # If LLM fails, still return child node with empty matched_knowledge_points
+                    pass
+
+    return {"node": child, "matched_knowledge_points": matched_knowledge_points}
 
 
 @router.post("/regions/{region_id}/graph/nodes/{node_id}/suggest-branches")
 async def suggest_branches(region_id: uuid.UUID, node_id: uuid.UUID):
     """Generate follow-up suggestions based on conversation history"""
-    async with await store.lock():
-        node = store.get_node(str(region_id), str(node_id))
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
+    node = session_service.get_node(str(region_id), str(node_id))
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
 
-        # Check if there's enough conversation for suggestions
-        messages = node.messages
-        has_user_msg = any(m.role == "user" for m in messages)
-        has_assistant_msg = any(m.role == "assistant" for m in messages)
-        if not has_user_msg or not has_assistant_msg:
-            raise HTTPException(status_code=400, detail="Need at least one user and assistant message")
+    messages = node.messages
+    has_user_msg = any(m.role == "user" for m in messages)
+    has_assistant_msg = any(m.role == "assistant" for m in messages)
+    if not has_user_msg or not has_assistant_msg:
+        raise HTTPException(status_code=400, detail="Need at least one user and assistant message")
 
-        # Build conversation context for LLM
-        conv_lines = []
-        for msg in messages:
-            role = "用户" if msg.role == "user" else "助手"
-            content = msg.content[:500].replace('\n', ' ')
-            conv_lines.append(f"[{role}]: {content}")
+    conv_lines = []
+    for msg in messages:
+        role = "用户" if msg.role == "user" else "助手"
+        content = msg.content[:500].replace('\n', ' ')
+        conv_lines.append(f"[{role}]: {content}")
 
-        conversation = "\n".join(conv_lines)
+    conversation = "\n".join(conv_lines)
 
     system_prompt = """你是一位专业的知识探索助手。你的任务是根据对话内容，生成两个可能有价值的追问方向。
 
@@ -223,39 +350,351 @@ async def suggest_branches(region_id: uuid.UUID, node_id: uuid.UUID):
 【方向1】强化学习基础
 【方向2】神经网络原理"""
 
-    async def generate():
-        full_response = ""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": conversation}
+    ]
+    return EventSourceResponse(stream_response("MiniMax-M2.7", messages))
+
+
+# ============ Knowledge Extraction ============
+
+@router.post("/regions/{region_id}/graph/nodes/{node_id}/extract-knowledge")
+async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
+    """Extract knowledge points from a session using LLM"""
+    # 1. Validate node exists
+    node = session_service.get_node(str(region_id), str(node_id))
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    # 2. Check if there are messages to analyze
+    messages = session_service.get_conversation_context(str(region_id), str(node_id))
+    has_user_msg = any(m["role"] == "user" for m in messages)
+    has_assistant_msg = any(m["role"] == "assistant" for m in messages)
+    if not has_user_msg or not has_assistant_msg:
+        raise HTTPException(status_code=400, detail="Need at least one user and assistant message")
+
+    # 3. Build conversation context for LLM
+    conv_lines = []
+    for msg in messages:
+        role = "用户" if msg["role"] == "user" else "助手"
+        content = msg["content"][:1000].replace('\n', ' ')
+        conv_lines.append(f"[{role}]: {content}")
+
+    conversation = "\n".join(conv_lines)
+
+    # 4. Call LLM to extract knowledge points
+    prompt = EXTRACTION_PROMPT.format(conversation=conversation)
+    llm_messages = [
+        {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
+        {"role": "user", "content": prompt}
+    ]
+
+    try:
+        # Initialize knowledge points tables if they don't exist
+        from db import init_knowledge_points_tables
+        init_knowledge_points_tables()
+    except Exception:
+        pass  # Tables may already exist
+
+    # Call LLM (non-streaming)
+    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+
+    # 5. Parse LLM response to get knowledge points
+    knowledge_points = []
+    try:
+        # Try to extract JSON from the response
+        import re
+        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
+        if json_match:
+            knowledge_points = json.loads(json_match.group())
+        else:
+            # Try parsing the whole response as JSON
+            knowledge_points = json.loads(llm_response)
+    except json.JSONDecodeError:
+        # If JSON parsing fails, return empty
+        pass
+
+    # 6. Save knowledge points and link to session
+    saved_points = []
+    for content in knowledge_points:
+        if not content or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+
+        kp_id = str(uuid.uuid4())
+        summary = content[:50] if len(content) > 50 else content
+
+        # Save to knowledge_points table
+        from db import execute_write
+        execute_write(
+            """INSERT INTO knowledge_points (id, content, summary, source_session_id)
+               VALUES (%s, %s, %s, %s)""",
+            (kp_id, content, summary, str(node_id))
+        )
+
+        # Link to session in knowledge_point_sessions table
+        kps_id = str(uuid.uuid4())
+        execute_write(
+            """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id)
+               VALUES (%s, %s, %s)""",
+            (kps_id, kp_id, str(node_id))
+        )
+
+        saved_points.append({
+            "id": kp_id,
+            "content": content,
+            "summary": summary
+        })
+
+    return {"knowledge_points": saved_points}
+
+
+# ============ Knowledge Match ============
+
+@router.post("/regions/{region_id}/knowledge/match")
+async def match_knowledge(region_id: uuid.UUID, question: str = Query(..., description="User's new session question")):
+    """
+    Match relevant knowledge points for a new session question.
+    1. Get all knowledge points for this region
+    2. Call LLM to find relevant ones
+    3. Return matched knowledge points with their IDs
+    """
+    # 1. Validate region exists
+    region = region_service.get_region(str(region_id))
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    # 2. Get all knowledge points for this region
+    knowledge_points = store.get_knowledge_points_for_region(str(region_id))
+
+    if not knowledge_points:
+        return {"matches": []}
+
+    # 3. Build knowledge points list for the prompt
+    knowledge_points_list = []
+    for kp in knowledge_points:
+        knowledge_points_list.append(f"ID: {kp['id']}\n内容: {kp['content']}")
+
+    kp_list_str = "\n\n".join(knowledge_points_list)
+
+    # 4. Call LLM to find relevant knowledge points
+    prompt = MATCH_PROMPT.format(
+        question=question,
+        knowledge_points_list=kp_list_str
+    )
+    llm_messages = [
+        {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
+        {"role": "user", "content": prompt}
+    ]
+
+    # Call LLM (non-streaming)
+    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+
+    # 5. Parse LLM response
+    matches = []
+    try:
+        import re
+        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
+        if json_match:
+            matches = json.loads(json_match.group())
+        else:
+            matches = json.loads(llm_response)
+    except json.JSONDecodeError:
+        pass
+
+    # 6. Ensure response format
+    if not isinstance(matches, list):
+        matches = []
+
+    # Build final response with content
+    final_matches = []
+    kp_dict = {kp['id']: kp for kp in knowledge_points}
+    for match in matches[:5]:  # Limit to 5
+        if isinstance(match, dict) and 'id' in match:
+            kp_id = match['id']
+            if kp_id in kp_dict:
+                final_matches.append({
+                    "id": kp_id,
+                    "content": kp_dict[kp_id]['content'],
+                    "reason": match.get('reason', '')
+                })
+
+    return final_matches
+
+
+# ============ Knowledge Merge ============
+
+@router.post("/regions/{region_id}/knowledge/merge-check", response_model=MergeCheckResponse)
+async def merge_check(region_id: uuid.UUID, req: MergeCheckRequest):
+    """
+    Check if new content is similar to existing knowledge points in the region.
+    Uses LLM to determine if any existing points represent the same concept.
+
+    Returns suggestions for merging with existing knowledge points.
+    """
+    # 1. Validate region exists
+    region = region_service.get_region(str(region_id))
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    # 2. Get all knowledge points for this region
+    knowledge_points = store.get_knowledge_points_for_region(str(region_id))
+
+    if not knowledge_points:
+        return {"suggestions": [], "has_merges": False}
+
+    # 3. Check each existing knowledge point for similarity
+    suggestions = []
+    for kp in knowledge_points:
+        prompt = MERGE_CHECK_PROMPT.format(
+            existing_content=kp['content'],
+            new_content=req.content
+        )
+        llm_messages = [
+            {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
+            {"role": "user", "content": prompt}
+        ]
+
+        # Call LLM (non-streaming)
+        llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+
+        # Parse LLM response
         try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": conversation}
-            ]
-            async for chunk in stream_chat("MiniMax-M2.7", messages):
-                full_response += chunk
-                yield {"event": "message", "data": json.dumps({"content": chunk})}
+            import re
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                if isinstance(result, dict) and result.get('merge'):
+                    suggestions.append(MergeSuggestion(
+                        existing_id=kp['id'],
+                        existing_content=kp['content'],
+                        new_content=req.content,
+                        merge=True,
+                        merged_content=result.get('merged_content')
+                    ))
+        except json.JSONDecodeError:
+            continue
 
-            # Parse the response to extract summary and directions
-            if full_response:
-                summary = ""
-                directions = []
-                for line in full_response.split('\n'):
-                    if line.startswith('【摘要】'):
-                        summary = line[4:].strip()
-                    elif line.startswith('【方向1】'):
-                        directions.append(line[4:].strip())
-                    elif line.startswith('【方向2】'):
-                        directions.append(line[4:].strip())
+    return MergeCheckResponse(
+        suggestions=suggestions,
+        has_merges=len(suggestions) > 0
+    )
 
-                # Store structured result
-                store._last_suggestion = {
-                    "node_id": str(node_id),
-                    "summary": summary,
-                    "directions": directions,
-                }
-        except Exception as e:
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
 
-    return EventSourceResponse(generate())
+@router.post("/regions/{region_id}/knowledge/batch-merge", response_model=BatchMergeResponse)
+async def batch_merge(region_id: uuid.UUID):
+    """
+    Find all knowledge point pairs in a region that could be merged.
+    Uses LLM to identify similar concepts across all points in the region.
+
+    Returns a list of pairs that are similar enough to potentially merge.
+    """
+    # 1. Validate region exists
+    region = region_service.get_region(str(region_id))
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    # 2. Get all knowledge points for this region
+    knowledge_points = store.get_knowledge_points_for_region(str(region_id))
+
+    if len(knowledge_points) < 2:
+        return {"pairs": [], "mergeable_pairs": []}
+
+    # 3. Build knowledge points list for the prompt
+    knowledge_points_list = []
+    for i, kp in enumerate(knowledge_points):
+        knowledge_points_list.append(f"[{i}] ID: {kp['id']}\n内容: {kp['content']}")
+
+    kp_list_str = "\n\n".join(knowledge_points_list)
+
+    # 4. Call LLM to find similar pairs
+    prompt = BATCH_MERGE_PROMPT.format(knowledge_points_list=kp_list_str)
+    llm_messages = [
+        {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
+        {"role": "user", "content": prompt}
+    ]
+
+    # Call LLM (non-streaming)
+    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+
+    # 5. Parse LLM response
+    pairs = []
+    mergeable_pairs = []
+    kp_dict = {kp['id']: kp for kp in knowledge_points}
+
+    try:
+        import re
+        json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
+        if json_match:
+            results = json.loads(json_match.group())
+            if isinstance(results, list):
+                for item in results:
+                    if isinstance(item, dict) and item.get('merge'):
+                        id1 = str(item.get('id1', ''))
+                        id2 = str(item.get('id2', ''))
+                        if id1 in kp_dict and id2 in kp_dict:
+                            pair = BatchMergePair(
+                                id1=id1,
+                                id2=id2,
+                                content1=kp_dict[id1]['content'],
+                                content2=kp_dict[id2]['content'],
+                                merge=True,
+                                merged_content=item.get('merged_content')
+                            )
+                            pairs.append(pair)
+                            mergeable_pairs.append(pair)
+                    elif isinstance(item, dict):
+                        # Include non-merge pairs for reference
+                        id1 = str(item.get('id1', ''))
+                        id2 = str(item.get('id2', ''))
+                        if id1 in kp_dict and id2 in kp_dict:
+                            pairs.append(BatchMergePair(
+                                id1=id1,
+                                id2=id2,
+                                content1=kp_dict[id1]['content'],
+                                content2=kp_dict[id2]['content'],
+                                merge=False,
+                                merged_content=None
+                            ))
+    except json.JSONDecodeError:
+        pass
+
+    return BatchMergeResponse(pairs=pairs, mergeable_pairs=mergeable_pairs)
+
+
+@router.post("/regions/{region_id}/knowledge/merge")
+async def merge_knowledge_points(
+    region_id: uuid.UUID,
+    existing_id: str = Query(..., description="ID of existing knowledge point to merge into"),
+    new_content: str = Query(..., description="New content to merge (or merged content)"),
+    delete_source: bool = Query(True, description="Whether to delete the source after merging")
+):
+    """
+    Merge new content into an existing knowledge point.
+    Updates the existing point's content and optionally deletes the source.
+    """
+    # Validate region exists
+    region = region_service.get_region(str(region_id))
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    # Update the existing knowledge point
+    from db import execute_write
+    execute_write(
+        """UPDATE knowledge_points SET content = %s, summary = %s, updated_at = NOW()
+           WHERE id = %s""",
+        (new_content, new_content[:50] if len(new_content) > 50 else new_content, existing_id)
+    )
+
+    if delete_source:
+        # Link any sessions from deleted source to the existing point
+        # (source_session_id remains pointing to original session)
+        pass
+
+    return {"success": True, "existing_id": existing_id, "merged_content": new_content}
 
 
 # ============ LLM Analysis ============
@@ -263,124 +702,44 @@ async def suggest_branches(region_id: uuid.UUID, node_id: uuid.UUID):
 @router.post("/regions/{region_id}/analyze")
 async def analyze_region(region_id: uuid.UUID):
     """Deep LLM analysis of the knowledge graph"""
-    async with await store.lock():
-        region = store.get_region(str(region_id))
-        if not region:
-            raise HTTPException(status_code=404, detail="Region not found")
+    region = region_service.get_region(str(region_id))
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
 
-        # Build comprehensive context for LLM
-        graph = region.graph
-        context_lines = [
-            f"# 知识区分析报告：{region.name}",
-            f"共 {len(graph.nodes)} 个会话，{len(graph.edges)} 条关联",
-            "",
-            "## 知识结构",
+    graph_data = {
+        "name": region.name,
+        "nodes": [
+            {
+                "id": str(n.id),
+                "title": n.title,
+                "messages": [
+                    (m.role, m.content[:200]) for m in n.messages[-3:]
+                ]
+            }
+            for n in region.graph.nodes
+        ],
+        "edges": [
+            {"source": str(e.source), "target": str(e.target)}
+            for e in region.graph.edges
         ]
+    }
 
-        # Build parent->children map from edges
-        children_map: dict[str, list[str]] = {}
-        for edge in graph.edges:
-            src, tgt = str(edge.source), str(edge.target)
-            if src not in children_map:
-                children_map[src] = []
-            children_map[src].append(tgt)
+    from analysis import build_analysis_context, ANALYSIS_PROMPT
+    context = build_analysis_context(graph_data)
 
-        # Find root nodes
-        all_targets = {str(e.target) for e in graph.edges}
-        roots = [n for n in graph.nodes if str(n.id) not in all_targets]
-
-        # Build tree representation with content
-        def describe_node(node_id: str, depth: int = 0) -> list[str]:
-            node = next((n for n in graph.nodes if str(n.id) == node_id), None)
-            if not node:
-                return []
-            indent = "  " * depth
-            lines = [f"{indent}- **{node.title}** ({len(node.messages)} 条消息)"]
-            if node.messages:
-                # Show last message summary
-                last_msg = node.messages[-1]
-                preview = last_msg.content[:100].replace('\n', ' ')
-                lines.append(f"{indent}  最新: {preview}...")
-            for child_id in children_map.get(node_id, []):
-                lines.extend(describe_node(child_id, depth + 1))
-            return lines
-
-        for root in roots:
-            context_lines.extend(describe_node(str(root.id), 0))
-
-        # Conversation content summary
-        context_lines.append("")
-        context_lines.append("## 对话内容摘要")
-        for node in graph.nodes:
-            if node.messages:
-                context_lines.append(f"\n### {node.title}")
-                for msg in node.messages[-3:]:  # Last 3 messages per node
-                    role = "用户" if msg.role == "user" else "助手"
-                    content = msg.content[:300].replace('\n', ' ')
-                    context_lines.append(f"[{role}]: {content}")
-
-        context = "\n".join(context_lines)
-
-    system_prompt = """你是一位专业的知识管理顾问和思维模式分析师。你的任务是对用户的知识图谱进行深度分析。
-
-请从以下几个维度进行深度分析：
-
-1. **知识结构诊断**
-   - 分析会话之间的关联是否合理
-   - 识别主题的深浅分布
-   - 发现知识网络的结构性问题
-
-2. **学习模式识别**
-   - 判断用户是习惯深度钻研还是广泛探索
-   - 分析追问的层次和深度
-   - 识别用户的思维习惯
-
-3. **认知盲区发现**
-   - 找出用户从未触及的相关领域
-   - 识别理解不完整的概念
-   - 发现论证链条的薄弱环节
-
-4. **个性化建议**
-   - 针对具体内容给出下一步探索方向
-   - 提供补全知识网络的具体问题建议
-   - 给出深化理解的具体路径
-
-请用中文输出，分析要深入、具体、有见地，不要泛泛而谈。"""
-
-    async def generate():
-        full_response = ""
-        try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ]
-            async for chunk in stream_chat("MiniMax-M2.7", messages):
-                full_response += chunk
-                yield {"event": "message", "data": json.dumps({"content": chunk})}
-
-            # Store analysis result
-            if full_response:
-                async with await store.lock():
-                    # Store the last analysis in memory (could be extended to DB)
-                    store._last_analysis = {
-                        "region_id": str(region_id),
-                        "content": full_response,
-                        "timestamp": str(region_id)  # simplified
-                    }
-        except Exception as e:
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
-
-    return EventSourceResponse(generate())
+    messages = [
+        {"role": "system", "content": ANALYSIS_PROMPT},
+        {"role": "user", "content": context}
+    ]
+    return EventSourceResponse(stream_response("MiniMax-M2.7", messages))
 
 
 # ============ Health Check ============
 
 @router.get("/")
 async def root():
-    async with await store.lock():
-        regions_count = len(store.regions)
     return {
         "message": "DeepMind_Query API",
         "status": "running",
-        "regions_count": regions_count
+        "regions_count": len(region_service.get_all_regions())
     }

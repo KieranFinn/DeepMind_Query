@@ -13,6 +13,26 @@ export interface Node {
   last_active_at: string;
 }
 
+export interface KnowledgePoint {
+  id: string;
+  title: string;
+  content: string;
+  score?: number;
+  node_id?: string;  // The session node this KP relates to
+}
+
+export interface KnowledgePointNode {
+  id: string;
+  type: 'knowledgePoint';
+  position: { x: number; y: number };
+  data: {
+    label: string;
+    content: string;
+    score?: number;
+    sourceNodeId?: string;
+  };
+}
+
 export interface Edge {
   id: string;
   source: string;
@@ -22,6 +42,7 @@ export interface Edge {
 export interface Graph {
   nodes: Node[];
   edges: Edge[];
+  knowledgePoints?: KnowledgePoint[];
 }
 
 export interface KnowledgeRegion {
@@ -35,11 +56,3 @@ export interface KnowledgeRegion {
   tags: string[];
 }
 
-export interface RegionsResponse {
-  regions: KnowledgeRegion[];
-}
-
-export interface ActiveState {
-  regionId: string | null;
-  nodeId: string | null;
-}

@@ -1,4 +1,4 @@
-import { KnowledgeRegion, Graph, Node } from './types';
+import { KnowledgeRegion, Graph, Node, KnowledgePoint } from './types';
 
 const API_BASE = '/api';
 
@@ -41,12 +41,6 @@ export async function getGraph(regionId: string): Promise<Graph> {
   return res.json();
 }
 
-export async function getNodes(regionId: string): Promise<Node[]> {
-  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes`);
-  if (!res.ok) throw new Error('Failed to get nodes');
-  return res.json();
-}
-
 export async function createNode(regionId: string, title?: string, parentId?: string): Promise<{ node: Node; success: boolean }> {
   const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes`, {
     method: 'POST',
@@ -57,18 +51,17 @@ export async function createNode(regionId: string, title?: string, parentId?: st
   return res.json();
 }
 
-export async function getNode(regionId: string, nodeId: string): Promise<Node> {
-  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}`);
-  if (!res.ok) throw new Error('Failed to get node');
-  return res.json();
-}
-
 export async function deleteNode(regionId: string, nodeId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete node');
 }
 
-export async function createChildNode(regionId: string, nodeId: string, title?: string): Promise<{ node: Node; success: boolean }> {
+export async function updateNode(regionId: string, nodeId: string, title: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}?title=${encodeURIComponent(title)}`, { method: 'PATCH' });
+  if (!res.ok) throw new Error('Failed to update node');
+}
+
+export async function createChildNode(regionId: string, nodeId: string, title?: string): Promise<{ node: Node; matched_knowledge_points: Array<{ id: string; content: string; reason?: string }> }> {
   const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}/children?title=${encodeURIComponent(title || '')}`, {
     method: 'POST',
   });
@@ -105,4 +98,36 @@ export async function getFollowUpSuggestions(
   return fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}/suggest-branches`, {
     method: 'POST',
   });
+}
+
+// Knowledge Points
+export async function matchKnowledgePoints(
+  regionId: string,
+  query: string
+): Promise<KnowledgePoint[]> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/knowledge/match?question=${encodeURIComponent(query)}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to match knowledge points');
+  const data = await res.json();
+  // Backend returns array of {id, content, reason}, transform to KnowledgePoint
+  if (Array.isArray(data)) {
+    return data.map((item: { id: string; content: string; reason?: string }) => ({
+      id: item.id,
+      title: item.content.slice(0, 30),
+      content: item.content,
+      score: 0.8, // Matched KPs get high relevance
+      node_id: undefined,
+    }));
+  }
+  return [];
+}
+
+export async function getKnowledgePointsForNode(
+  regionId: string,
+  nodeId: string
+): Promise<KnowledgePoint[]> {
+  const res = await fetch(`${API_BASE}/regions/${regionId}/graph/nodes/${nodeId}/knowledge`);
+  if (!res.ok) throw new Error('Failed to get knowledge points for node');
+  return res.json();
 }

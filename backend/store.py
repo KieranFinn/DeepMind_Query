@@ -3,10 +3,11 @@
 import asyncio
 import json
 import uuid
+from collections import deque
 from datetime import datetime
 from typing import Optional
 from db import get_cursor
-from models import KnowledgeRegion, Graph, Node, Edge, Message
+from models import KnowledgeRegion, Graph, Node, Edge, Message, KnowledgePoint, KnowledgePointSession, CreateKnowledgePointRequest
 
 
 class ConversationStore:
@@ -17,8 +18,6 @@ class ConversationStore:
         self.active_region_id: Optional[str] = None
         self._lock = asyncio.Lock()
         self._loaded = False
-        self._last_analysis: Optional[dict] = None
-        self._last_suggestion: Optional[dict] = None
 
     async def lock(self):
         return self._lock
@@ -127,7 +126,7 @@ class ConversationStore:
             cursor.execute(
                 """INSERT INTO regions (id, name, description, color, tags)
                    VALUES (%s, %s, %s, %s, %s)""",
-                (str(region.id), region.name, region.description, region.color, tags_json)
+                (region.id, region.name, region.description, region.color, tags_json)
             )
 
     def _save_node_to_db(self, node: Node, region_id: str):
@@ -136,7 +135,7 @@ class ConversationStore:
             cursor.execute(
                 """INSERT INTO nodes (id, region_id, parent_id, title)
                    VALUES (%s, %s, %s, %s)""",
-                (str(node.id), region_id, str(node.parent_id) if node.parent_id else None, node.title)
+                (node.id, region_id, node.parent_id, node.title)
             )
 
     def _save_edge_to_db(self, edge: Edge, region_id: str):
@@ -145,7 +144,7 @@ class ConversationStore:
             cursor.execute(
                 """INSERT INTO edges (id, source, target, region_id)
                    VALUES (%s, %s, %s, %s)""",
-                (str(edge.id), str(edge.source), str(edge.target), region_id)
+                (edge.id, edge.source, edge.target, region_id)
             )
 
     # Region operations
@@ -167,7 +166,7 @@ class ConversationStore:
         self.regions[region_id] = region
 
         # Create first node automatically (create_node handles adding to graph.nodes)
-        self.create_node(region_id, "第一个会话")
+        self.create_node(region_id, f"第一个会话（{region.name}）")
 
         # Now the region's graph has the node (via create_node)
 
@@ -246,7 +245,7 @@ class ConversationStore:
             if region_id not in self.regions:
                 return None
         for node in self.regions[region_id].graph.nodes:
-            if str(node.id) == node_id:
+            if node.id == node_id:
                 return node
         return None
 
@@ -258,14 +257,14 @@ class ConversationStore:
 
         # Find all descendant node IDs using BFS (cascade delete)
         to_delete = {node_id}
-        queue = [node_id]
+        queue = deque([node_id])
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             # Find all children of current node
             for edge in graph.edges:
-                if str(edge.source) == current and str(edge.target) not in to_delete:
-                    to_delete.add(str(edge.target))
-                    queue.append(str(edge.target))
+                if edge.source == current and edge.target not in to_delete:
+                    to_delete.add(edge.target)
+                    queue.append(edge.target)
 
         # Delete from database - need to delete in correct order (children before parents)
         # Due to FK constraints, delete edges first, then nodes
@@ -284,13 +283,24 @@ class ConversationStore:
 
         # Update in-memory graph
         self.regions[region_id].graph.nodes = [
-            n for n in self.regions[region_id].graph.nodes if str(n.id) not in to_delete
+            n for n in self.regions[region_id].graph.nodes if n.id not in to_delete
         ]
         self.regions[region_id].graph.edges = [
             e for e in self.regions[region_id].graph.edges
-            if str(e.source) not in to_delete and str(e.target) not in to_delete
+            if e.source not in to_delete and e.target not in to_delete
         ]
         return True
+
+    def update_node_title(self, region_id: str, node_id: str, title: str) -> bool:
+        if region_id not in self.regions:
+            return False
+        with get_cursor() as cursor:
+            cursor.execute("UPDATE nodes SET title = %s WHERE id = %s", (title, node_id))
+        for node in self.regions[region_id].graph.nodes:
+            if node.id == node_id:
+                node.title = title
+                return True
+        return False
 
     def update_node_activity(self, region_id: str, node_id: str):
         if region_id not in self.regions:
@@ -301,7 +311,7 @@ class ConversationStore:
                 (node_id,)
             )
         for node in self.regions[region_id].graph.nodes:
-            if str(node.id) == node_id:
+            if node.id == node_id:
                 node.last_active_at = datetime.utcnow().isoformat()
                 break
 
@@ -331,6 +341,140 @@ class ConversationStore:
             if region_id not in self.regions:
                 return None
         return self.regions[region_id].graph
+
+    # Knowledge Point operations
+    def create_knowledge_point(self, content: str, session_id: str = None, summary: str = None, source_session_id: str = None) -> Optional[KnowledgePoint]:
+        """Create a new knowledge point and optionally link it to a session."""
+        kp_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        with get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO knowledge_points (id, content, summary, source_session_id, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (kp_id, content, summary, source_session_id, now, now)
+            )
+
+        kp = KnowledgePoint(
+            id=kp_id,
+            content=content,
+            summary=summary,
+            source_session_id=source_session_id,
+            created_at=now,
+            updated_at=now,
+        )
+
+        # If session_id provided, link the knowledge point to the session
+        if session_id:
+            self.link_knowledge_point_to_session(kp_id, session_id)
+
+        return kp
+
+    def get_knowledge_point(self, kp_id: str) -> Optional[KnowledgePoint]:
+        """Get a knowledge point by ID."""
+        kp_id = str(kp_id)  # Ensure string for MySQL
+        with get_cursor() as cursor:
+            cursor.execute("SELECT * FROM knowledge_points WHERE id = %s", (kp_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return KnowledgePoint(
+                id=str(row['id']),
+                content=row['content'],
+                summary=row['summary'],
+                source_session_id=str(row['source_session_id']) if row['source_session_id'] else None,
+                created_at=row['created_at'],
+                updated_at=row['updated_at'],
+            )
+
+    def get_knowledge_points_for_session(self, session_id: str) -> list[KnowledgePoint]:
+        """Get all knowledge points linked to a session."""
+        session_id = str(session_id)  # Ensure string for MySQL
+        with get_cursor() as cursor:
+            cursor.execute(
+                """SELECT kp.* FROM knowledge_points kp
+                   JOIN knowledge_point_sessions kps ON kp.id = kps.knowledge_point_id
+                   WHERE kps.session_id = %s
+                   ORDER BY kps.created_at""",
+                (session_id,)
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append(KnowledgePoint(
+                    id=str(row['id']),
+                    content=row['content'],
+                    summary=row['summary'],
+                    source_session_id=str(row['source_session_id']) if row['source_session_id'] else None,
+                    created_at=row['created_at'],
+                    updated_at=row['updated_at'],
+                ))
+            return results
+
+    def link_knowledge_point_to_session(self, kp_id: str, session_id: str) -> Optional[KnowledgePointSession]:
+        """Link a knowledge point to a session."""
+        kp_id = str(kp_id)  # Ensure string for MySQL
+        session_id = str(session_id)  # Ensure string for MySQL
+        kps_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        with get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id, created_at)
+                   VALUES (%s, %s, %s, %s)""",
+                (kps_id, kp_id, session_id, now)
+            )
+
+        return KnowledgePointSession(
+            id=kps_id,
+            knowledge_point_id=kp_id,
+            session_id=session_id,
+            created_at=now,
+        )
+
+    def delete_knowledge_point(self, kp_id: str) -> bool:
+        """Delete a knowledge point and its session links."""
+        kp_id = str(kp_id)  # Ensure string for MySQL
+        with get_cursor() as cursor:
+            # Delete the knowledge point (session links will cascade due to FK constraint)
+            cursor.execute("DELETE FROM knowledge_points WHERE id = %s", (kp_id,))
+            return cursor.rowcount > 0
+
+    def get_knowledge_points_for_region(self, region_id: str) -> list[dict]:
+        """
+        Get all knowledge points for a region (from all sessions/nodes in that region).
+        Returns list of dicts with 'id' and 'content' keys.
+        """
+        with get_cursor() as cursor:
+            # Get all node IDs for this region
+            cursor.execute(
+                "SELECT id FROM nodes WHERE region_id = %s",
+                (region_id,)
+            )
+            node_rows = cursor.fetchall()
+            node_ids = [str(row['id']) for row in node_rows]
+
+            if not node_ids:
+                return []
+
+            # Get knowledge_point_ids linked to those nodes via knowledge_point_sessions
+            placeholders = ','.join(['%s'] * len(node_ids))
+            cursor.execute(
+                f"""SELECT DISTINCT kp.id, kp.content, kp.summary, kp.source_session_id,
+                           kp.created_at, kp.updated_at
+                    FROM knowledge_points kp
+                    JOIN knowledge_point_sessions kps ON kp.id = kps.knowledge_point_id
+                    WHERE kps.session_id IN ({placeholders})""",
+                tuple(node_ids)
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    "id": str(row['id']),
+                    "content": row['content'],
+                    "summary": row['summary'],
+                    "source_session_id": str(row['source_session_id']) if row['source_session_id'] else None,
+                })
+            return results
 
 
 # Global store instance

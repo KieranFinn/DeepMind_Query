@@ -5,12 +5,13 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { useStore } from '../store';
+import type { Message } from '../types';
 import FollowUpModal from './FollowUpModal';
 
 export default function ConversationPanel() {
   const {
     isLoading, streamingMessage,
-    sendUserMessage, createChildNode, cancelStreaming,
+    sendUserMessage, createChildNode, cancelStreaming, updateNode,
     getActiveRegion, getActiveNode,
     activeRegionId,
     followUpReady, followUpPending,
@@ -20,61 +21,26 @@ export default function ConversationPanel() {
   const [input, setInput] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showFollowUp, setShowFollowUp] = useState(false);
-  const [showFollowUpBtn, setShowFollowUpBtn] = useState(false);  // For animation
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const wasLoading = useRef(false);
 
   const activeRegion = getActiveRegion();
   const activeNode = getActiveNode();
 
-  // Check message state
   const messages = activeNode?.messages || [];
-  const hasUserMsg = messages.some(m => m.role === 'user');
-  const hasAssistantMsg = messages.some(m => m.role === 'assistant');
-  const hasConversation = hasUserMsg && hasAssistantMsg;
+  const hasConversation = messages.some(m => m.role === 'user') && messages.some(m => m.role === 'assistant');
 
-  // After streaming completes, trigger follow-up suggestion fetch
+  // Fetch follow-up suggestions when node has conversation
+  // fetchFollowUpSuggestions has internal idempotency - safe to call multiple times
   useEffect(() => {
-    if (wasLoading.current && !isLoading && activeNode && activeRegionId) {
-      const msgs = activeNode.messages || [];
-      const hasU = msgs.some((m: any) => m.role === 'user');
-      const hasA = msgs.some((m: any) => m.role === 'assistant');
-      if (hasU && hasA) {
-        // First Q&A completed - fetch follow-up suggestions in background
-        fetchFollowUpSuggestions(activeRegionId, String(activeNode.id));
-      }
-    }
-    wasLoading.current = isLoading;
-  }, [isLoading, activeNode, activeRegionId, fetchFollowUpSuggestions]);
-
-  // When follow-up becomes ready, trigger animation
-  useEffect(() => {
-    if (followUpReady) {
-      setShowFollowUpBtn(true);
-    }
-  }, [followUpReady]);
+    if (!activeNode || !activeRegionId || !hasConversation) return;
+    fetchFollowUpSuggestions(activeRegionId, String(activeNode.id));
+  }, [activeNode, activeRegionId, hasConversation, fetchFollowUpSuggestions]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeNode, streamingMessage]);
-
-  // Listen for follow-up creation event from FollowUpModal
-  useEffect(() => {
-    const handleFollowUpCreate = async (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      const { title, link } = detail;
-      if (!activeNode) return;
-      const nodeId = String(activeNode.id);
-      if (link && title) {
-        await createChildNode(nodeId, title);
-      } else {
-        // No link - create standalone child
-        await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
-      }
-    };
-    window.addEventListener('followup-create', handleFollowUpCreate);
-    return () => window.removeEventListener('followup-create', handleFollowUpCreate);
-  }, [activeNode, createChildNode]);
+  }, [activeNode, streamingMessage, messages.length]);
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || isLoading || !activeNode) return;
@@ -91,7 +57,7 @@ export default function ConversationPanel() {
     // Ctrl/Cmd + Enter to create branch (not for sending)
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (followUpReady) handleFollowUpClick();
+      if (followUpReady) setShowFollowUp(true);
     }
   };
 
@@ -100,8 +66,33 @@ export default function ConversationPanel() {
     setShowFollowUp(true);
   };
 
+  const handleCreateFollowUp = async (title: string, link: boolean) => {
+    if (!activeNode) return;
+    const nodeId = String(activeNode.id);
+    if (link && title) {
+      await createChildNode(nodeId, title);
+    } else {
+      await createChildNode(nodeId, `分支 ${nodeId.slice(0, 8)}`);
+    }
+  };
+
   const handleCancel = () => {
     cancelStreaming();
+  };
+
+  const handleEditTitle = () => {
+    if (!activeNode) return;
+    setTitleInput(activeNode.title);
+    setIsEditingTitle(true);
+  };
+
+  const saveTitle = async () => {
+    if (!activeNode || !activeRegionId || !titleInput.trim()) {
+      setIsEditingTitle(false);
+      return;
+    }
+    await updateNode(activeRegionId, String(activeNode.id), titleInput.trim());
+    setIsEditingTitle(false);
   };
 
   const copyMessage = (content: string, index: number) => {
@@ -134,9 +125,31 @@ export default function ConversationPanel() {
         style={{ borderBottom: '1px solid var(--border)', backgroundColor: 'var(--bg-tertiary)' }}
       >
         <div className="min-w-0 flex-1">
-          <h2 className="font-semibold text-sm truncate" style={{ color: 'var(--text-primary)' }}>
-            {activeNode.title}
-          </h2>
+          {isEditingTitle ? (
+            <input
+              value={titleInput}
+              onChange={(e) => setTitleInput(e.target.value)}
+              onBlur={saveTitle}
+              onKeyDown={(e) => e.key === 'Enter' && saveTitle()}
+              autoFocus
+              className="w-full px-2 py-1 text-sm font-semibold rounded"
+              style={{
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+                outline: 'none',
+              }}
+            />
+          ) : (
+            <h2
+              onClick={handleEditTitle}
+              className="font-semibold text-sm truncate cursor-pointer hover:opacity-80"
+              style={{ color: 'var(--text-primary)' }}
+              title="点击修改标题"
+            >
+              {activeNode.title}
+            </h2>
+          )}
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
             <span style={{ color: activeRegion.color }}>{activeRegion.name}</span>
             {' · '}
@@ -153,7 +166,7 @@ export default function ConversationPanel() {
           </p>
         )}
 
-        {messages.map((msg: any, i: number) => (
+        {messages.map((msg: Message, i: number) => (
           <div
             key={`${msg.created_at}-${i}`}
             className="message-enter flex animate-fade-in"
@@ -219,7 +232,7 @@ export default function ConversationPanel() {
       </div>
 
       {/* Actions - only show when there are messages or streaming */}
-      {(hasConversation || isLoading || showFollowUpBtn) && (
+      {(hasConversation || isLoading || followUpReady) && (
         <div
           className="px-4 py-2 flex gap-2 items-center"
           style={{ borderTop: '1px solid var(--border)' }}
@@ -297,7 +310,7 @@ export default function ConversationPanel() {
         </div>
       </div>
 
-      <FollowUpModal isOpen={showFollowUp} onClose={() => setShowFollowUp(false)} />
+      <FollowUpModal isOpen={showFollowUp} onClose={() => setShowFollowUp(false)} onCreateFollowUp={handleCreateFollowUp} />
     </div>
   );
 }
