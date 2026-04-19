@@ -37,11 +37,11 @@ DeepMind_Query/
 ├── backend/          # FastAPI 后端
 │   ├── main.py      # 应用入口 + CORS 配置
 │   ├── models.py    # Pydantic 数据模型
-│   ├── store.py     # Dolt 数据库持久化存储
+│   ├── store.py     # SQLite 持久化存储
 │   ├── routes.py    # API 路由 (Regions/Graph/Messages/Analysis)
 │   ├── analysis.py   # 大爆炸分析上下文构建
 │   ├── llm.py       # MiniMax Anthropic API 集成
-│   ├── db.py        # Dolt MySQL 连接管理
+│   ├── db.py        # SQLite 连接管理
 │   └── requirements.txt
 ├── frontend/         # React 前端
 │   ├── src/
@@ -61,13 +61,23 @@ DeepMind_Query/
 │   └── package.json
 ```
 
+## 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `MINIMAX_API_KEY` | MiniMax API Key（用于 MiniMax-* 模型） | - |
+| `ANTHROPIC_API_KEY` | Anthropic API Key（用于 claude-* 模型） | - |
+| `LLM_PROVIDER` | 默认 LLM 提供商 | `minimax` |
+| `API_KEY` | API 认证密钥（可选，设置后所有请求需要此密钥） | - |
+| `LLM_CACHE_ENABLED` | 启用 LLM 响应缓存 | `true` |
+
 ## 一键部署
 
 ### Railway (推荐)
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new)
 
 1. 点击上方按钮，连接 GitHub 仓库
-2. 设置环境变量 `ANTHROPIC_API_KEY`
+2. 设置环境变量 `MINIMAX_API_KEY`
 3. Railway 自动检测并部署
 
 ### Docker
@@ -83,17 +93,16 @@ Vercel 部署前端，后端需单独部署（Railway/Docker/云服务器）
 ### 前置要求
 
 - Node.js 18+
-- Python 3.10+
-- Dolt 数据库（MySQL 兼容端口 3307）
-- MiniMax Anthropic API Key
+- Python 3.9+
+- SQLite（Python 内置，无需单独安装）
+- MiniMax API Key
 
 ### 后端
 
 ```bash
 cd backend
-cp .env.example .env  # 编辑 .env 填入你的 ANTHROPIC_API_KEY
+cp .env.example .env  # 编辑 .env 填入你的 MINIMAX_API_KEY
 pip install -r requirements.txt
-python3 -c "import dolt; print('Dolt OK')"  # 验证 Dolt 可用
 uvicorn main:app --reload --port 8000
 ```
 
@@ -106,6 +115,8 @@ cd frontend
 npm install
 npm run dev
 ```
+
+前端运行在 http://localhost:5173
 
 访问 http://localhost:5173
 
