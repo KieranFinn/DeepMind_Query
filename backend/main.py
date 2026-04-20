@@ -41,6 +41,10 @@ app = FastAPI(
 # API Key authentication middleware
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
+    # Skip auth for OPTIONS (CORS preflight) requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     # Skip auth for docs and health endpoints
     if request.url.path in ["/docs", "/redoc", "/openapi.json", "/health"]:
         return await call_next(request)
