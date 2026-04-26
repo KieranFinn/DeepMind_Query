@@ -12,6 +12,11 @@ from store import store
 logger = logging.getLogger(__name__)
 
 
+def error_response(error: str, code: str):
+    """Return a sanitized error response without stack trace"""
+    return {"error": error, "code": code}
+
+
 def parse_llm_json_response(response: str, context: str = "unknown") -> list:
     """
     Parse LLM JSON response with robust fallback.
@@ -140,7 +145,7 @@ async def stream_response(model: str, messages: list[dict], region_id: str = Non
             session_service.add_message(region_id, node_id, "assistant", full_response)
     except Exception as e:
         logger.warning(f"stream_response error: {e}")
-        yield {"event": "error", "data": json.dumps({"error": str(e)})}
+        yield {"event": "error", "data": json.dumps({"error": str(e), "code": "STREAM_ERROR"})}
 from models import (
     CreateRegionRequest,
     CreateNodeRequest,
