@@ -138,7 +138,7 @@ async def stream_response(model: str, messages: list[dict], region_id: str = Non
     """Streaming helper that yields SSE events and persists messages on completion."""
     full_response = ""
     try:
-        async for chunk in llm_service.stream_chat(model, messages):
+        async for chunk in llm_service.stream_chat(model, messages, session_id=node_id):
             full_response += chunk
             yield {"event": "message", "data": json.dumps({"content": chunk})}
         if full_response and region_id and node_id:
