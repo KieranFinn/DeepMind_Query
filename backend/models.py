@@ -1,13 +1,25 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 from uuid import UUID, uuid4
+from backend.validators import (
+    CONTENT_MAX_LENGTH,
+    CONTEXT_WINDOW_MAX_MESSAGES,
+    SYSTEM_PROMPT_MAX_LENGTH,
+)
 
 
 class Message(BaseModel):
     role: str  # "user" | "assistant"
-    content: str
+    content: str = Field(max_length=CONTENT_MAX_LENGTH)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("content")
+    @classmethod
+    def content_length_validator(cls, v: str) -> str:
+        if len(v) > CONTENT_MAX_LENGTH:
+            raise ValueError(f"Content exceeds maximum length of {CONTENT_MAX_LENGTH} characters")
+        return v
 
 
 class Node(BaseModel):
@@ -18,6 +30,13 @@ class Node(BaseModel):
     parent_id: Optional[UUID] = None  # For edge drawing
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_active_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("messages")
+    @classmethod
+    def messages_context_window_validator(cls, v: list[Message]) -> list[Message]:
+        if len(v) > CONTEXT_WINDOW_MAX_MESSAGES:
+            raise ValueError(f"Context window exceeds maximum of {CONTEXT_WINDOW_MAX_MESSAGES} messages")
+        return v
 
 
 class Edge(BaseModel):
@@ -58,18 +77,32 @@ class CreateNodeRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    content: str
+    content: str = Field(max_length=CONTENT_MAX_LENGTH)
     model: str = "MiniMax-M2.7"
+
+    @field_validator("content")
+    @classmethod
+    def content_length_validator(cls, v: str) -> str:
+        if len(v) > CONTENT_MAX_LENGTH:
+            raise ValueError(f"Content exceeds maximum length of {CONTENT_MAX_LENGTH} characters")
+        return v
 
 
 class KnowledgePoint(BaseModel):
     """A knowledge point extracted from a session"""
     id: UUID = Field(default_factory=uuid4)
-    content: str
+    content: str = Field(max_length=CONTENT_MAX_LENGTH)
     summary: Optional[str] = None
     source_session_id: Optional[UUID] = None  # Which session extracted this
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("content")
+    @classmethod
+    def content_length_validator(cls, v: str) -> str:
+        if len(v) > CONTENT_MAX_LENGTH:
+            raise ValueError(f"Content exceeds maximum length of {CONTENT_MAX_LENGTH} characters")
+        return v
 
 
 class KnowledgePointSession(BaseModel):
@@ -81,15 +114,29 @@ class KnowledgePointSession(BaseModel):
 
 
 class CreateKnowledgePointRequest(BaseModel):
-    content: str = Field(..., description="The knowledge point content")
+    content: str = Field(..., description="The knowledge point content", max_length=CONTENT_MAX_LENGTH)
     summary: Optional[str] = Field(None, max_length=500)
     source_session_id: Optional[UUID] = None
+
+    @field_validator("content")
+    @classmethod
+    def content_length_validator(cls, v: str) -> str:
+        if len(v) > CONTENT_MAX_LENGTH:
+            raise ValueError(f"Content exceeds maximum length of {CONTENT_MAX_LENGTH} characters")
+        return v
 
 
 class MergeCheckRequest(BaseModel):
     """Request for checking if new content matches existing knowledge points"""
-    content: str = Field(..., description="The new knowledge point content to check")
+    content: str = Field(..., description="The new knowledge point content to check", max_length=CONTENT_MAX_LENGTH)
     threshold: Optional[float] = Field(0.8, description="Similarity threshold (0-1)")
+
+    @field_validator("content")
+    @classmethod
+    def content_length_validator(cls, v: str) -> str:
+        if len(v) > CONTENT_MAX_LENGTH:
+            raise ValueError(f"Content exceeds maximum length of {CONTENT_MAX_LENGTH} characters")
+        return v
 
 
 class MergeSuggestion(BaseModel):
