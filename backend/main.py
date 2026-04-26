@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from routes import router
 from contextlib import asynccontextmanager
+from middleware.error_handler import register_exception_handlers
 import os
 import secrets
 import logging
@@ -38,6 +39,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Register global exception handlers
+register_exception_handlers(app)
 
 
 # Global exception handler - prevents stack trace leakage
