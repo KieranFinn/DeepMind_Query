@@ -258,10 +258,26 @@ class LLMService:
     async def stream_chat(
         self, model: str, messages: list[dict], api_key: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
-        """Delegate to appropriate provider based on model"""
+        """Delegate to appropriate provider based on model, with caching"""
+        # Check cache first
+        messages_hash = _get_messages_hash(model, messages)
+        cached = _get_cache_entry(model, messages_hash)
+        if cached:
+            # Yield cached response in chunks to simulate streaming
+            chunk_size = 10
+            for i in range(0, len(cached), chunk_size):
+                yield cached[i:i + chunk_size]
+            return
+
+        # Call provider and buffer for caching
         provider = self._get_provider_for_model(model)
+        full_response = ""
         async for chunk in provider.stream_chat(model, messages, api_key):
+            full_response += chunk
             yield chunk
+
+        # Store in cache after completion
+        _set_cache_entry(model, messages_hash, full_response)
 
     async def chat(
         self, model: str, messages: list[dict], api_key: Optional[str] = None
