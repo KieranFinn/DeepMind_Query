@@ -28,6 +28,10 @@ async def lifespan(app: FastAPI):
         print(f"API Key authentication ENABLED")
     else:
         print("API Key authentication DISABLED (set API_KEY env var to enable)")
+    if USE_REDIS:
+        print(f"Redis rate limiting ENABLED ({REDIS_URL})")
+    else:
+        print("Redis rate limiting DISABLED (set REDIS_URL env var to enable for multi-instance deployments)")
     yield
     # Shutdown
     print("DeepMind_Query API shutting down...")
@@ -171,18 +175,72 @@ app.add_middleware(
 )
 
 
-# Simple rate limiting middleware (token bucket per IP)
+# Rate limiting middleware (token bucket per IP)
+# Supports both in-memory (single instance) and Redis (distributed multi-instance)
 from collections import defaultdict
 from time import time
+import os
 
 RATE_LIMIT_TOKENS = 10  # Max requests
 RATE_LIMIT_REFILL = 60  # Seconds to refill bucket
 
+# Redis configuration for distributed rate limiting
+REDIS_URL = os.getenv("REDIS_URL", "")
+USE_REDIS = bool(REDIS_URL)
+
+# Redis client (lazy initialization)
+_redis_client = None
+
+
+def _get_redis_client():
+    """Get or create Redis client (lazy initialization)."""
+    global _redis_client
+    if _redis_client is None and USE_REDIS:
+        try:
+            import redis
+            _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+            _redis_client.ping()  # Test connection
+            logger.info(f"Redis rate limiting enabled: {REDIS_URL}")
+        except Exception as e:
+            logger.warning(f"Redis connection failed, falling back to in-memory rate limiting: {e}")
+            _redis_client = None
+    return _redis_client
+
+
+def _check_rate_limit_redis(client_ip: str) -> bool:
+    """Check rate limit using Redis sliding window counter."""
+    import redis
+    client = _get_redis_client()
+    if client is None:
+        return _check_rate_limit_memory(client_ip)
+
+    key = f"rate_limit:{client_ip}"
+    now = time()
+    window_start = now - RATE_LIMIT_REFILL
+
+    pipe = client.pipeline()
+    # Remove old entries outside the window
+    pipe.zremrangebyscore(key, 0, window_start)
+    # Count requests in current window
+    pipe.zcard(key)
+    # Add current request
+    pipe.zadd(key, {str(now): now})
+    # Set expiry on the key
+    pipe.expire(key, RATE_LIMIT_REFILL * 2)
+    results = pipe.execute()
+
+    request_count = results[1]
+    if request_count >= RATE_LIMIT_TOKENS:
+        return False
+    return True
+
+
+# In-memory fallback rate limiting
 rate_limit_data = defaultdict(lambda: {"tokens": RATE_LIMIT_TOKENS, "last_refill": time()})
 
 
-def check_rate_limit(client_ip: str) -> bool:
-    """Returns True if request is allowed, False if rate limited"""
+def _check_rate_limit_memory(client_ip: str) -> bool:
+    """Check rate limit using in-memory token bucket (single instance only)."""
     now = time()
     data = rate_limit_data[client_ip]
 
@@ -196,6 +254,13 @@ def check_rate_limit(client_ip: str) -> bool:
         data["tokens"] -= 1
         return True
     return False
+
+
+def check_rate_limit(client_ip: str) -> bool:
+    """Returns True if request is allowed, False if rate limited."""
+    if USE_REDIS:
+        return _check_rate_limit_redis(client_ip)
+    return _check_rate_limit_memory(client_ip)
 
 
 @app.middleware("http")
