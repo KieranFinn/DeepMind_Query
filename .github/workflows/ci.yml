@@ -23,10 +23,18 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-asyncio httpx
 
+      - name: Validate backend directory structure
+        run: |
+          if [ ! -d "backend" ]; then echo "Error: backend directory not found"; exit 1; fi
+          if [ ! -d "backend/tests" ]; then echo "Error: backend/tests directory not found"; exit 1; fi
+          if [ ! -f "backend/pytest.ini" ]; then echo "Error: backend/pytest.ini not found"; exit 1; fi
+          if [ ! -f "backend/main.py" ]; then echo "Error: backend/main.py not found"; exit 1; fi
+          echo "Path validation passed"
+
       - name: Run backend tests
         run: |
           cd backend
-          python -m pytest tests/ -v
+          python -m pytest -v
 
       - name: Check Python syntax
         run: |
