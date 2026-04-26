@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS knowledge_point_sessions (
 LLM_CACHE_TABLE = """
 CREATE TABLE IF NOT EXISTS llm_cache (
     id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL,
     messages_hash TEXT NOT NULL,
     response TEXT NOT NULL,
@@ -141,9 +142,9 @@ CREATE TABLE IF NOT EXISTS llm_cache (
 )
 """
 
-# Index for faster lookups
+# Index for faster lookups (includes session_id for privacy isolation)
 LLM_CACHE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_llm_cache_lookup ON llm_cache(model, messages_hash);
+CREATE INDEX IF NOT EXISTS idx_llm_cache_lookup ON llm_cache(session_id, model, messages_hash);
 """
 
 

@@ -348,7 +348,7 @@ async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str
 
                 # Call LLM (non-streaming)
                 try:
-                    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+                    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages, session_id=str(node_id))
 
                     # Parse LLM response using helper
                     matches = parse_llm_json_response(llm_response, "match_knowledge")
@@ -458,7 +458,7 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
         logger.warning(f"Failed to init knowledge points tables: {e}")
 
     # Call LLM (non-streaming)
-    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages, session_id=str(node_id))
 
     # 5. Parse LLM response to get knowledge points
     knowledge_points = parse_llm_json_response(llm_response, "extract_knowledge")
