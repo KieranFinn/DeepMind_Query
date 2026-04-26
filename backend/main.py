@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import os
 import secrets
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,41 @@ app = FastAPI(
 )
 
 
+# Global exception handler - prevents stack trace leakage
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions and return sanitized error response"""
+    # Log the full error server-side for debugging
+    logger.error(f"Unhandled exception: {exc}\n{traceback.format_exc()}")
+    # Return sanitized error to client - no stack trace
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error", "code": "INTERNAL_ERROR"}
+    )
+
+
+# HTTPException handler - ensures consistent {error, code} format
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Return HTTPException errors in consistent {error, code} format"""
+    # Map status codes to error codes
+    error_codes = {
+        400: "BAD_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        405: "METHOD_NOT_ALLOWED",
+        422: "VALIDATION_ERROR",
+        429: "RATE_LIMITED",
+        500: "INTERNAL_ERROR",
+    }
+    code = error_codes.get(exc.status_code, f"HTTP_{exc.status_code}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "code": code}
+    )
+
+
 # API Key authentication middleware
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
@@ -63,7 +99,6 @@ async def api_key_auth(request: Request, call_next):
         )
 
     if not secrets.compare_digest(provided_key, API_KEY):
-        logger.warning(f"Invalid API key attempt from {request.client.host}")
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid API key"}
