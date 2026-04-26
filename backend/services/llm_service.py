@@ -20,7 +20,7 @@ LLM_CACHE_ENABLED = os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true"
 def _get_messages_hash(model: str, messages: list[dict]) -> str:
     """Create a hash of model + messages for cache key"""
     content = json.dumps({"model": model, "messages": messages}, sort_keys=True)
-    return hashlib.sha256(content.encode()).hexdigest()
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
 def _get_cache_entry(model: str, messages_hash: str) -> Optional[str]:
