@@ -414,7 +414,12 @@ async def suggest_branches(region_id: uuid.UUID, node_id: uuid.UUID):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": conversation}
     ]
-    return EventSourceResponse(stream_response("MiniMax-M2.7", messages))
+
+    try:
+        return EventSourceResponse(stream_response("MiniMax-M2.7", messages))
+    except Exception as e:
+        logger.error(f"LLM error in suggest_branches: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate suggestions")
 
 
 # ============ Knowledge Extraction ============
@@ -458,7 +463,11 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
         logger.warning(f"Failed to init knowledge points tables: {e}")
 
     # Call LLM (non-streaming)
-    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    try:
+        llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    except Exception as e:
+        logger.error(f"LLM error in extract_knowledge: {e}")
+        raise HTTPException(status_code=500, detail="Failed to extract knowledge points")
 
     # 5. Parse LLM response to get knowledge points
     knowledge_points = parse_llm_json_response(llm_response, "extract_knowledge")
@@ -467,37 +476,41 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
 
     # 6. Save knowledge points and link to session
     saved_points = []
-    for content in knowledge_points:
-        if not content or not isinstance(content, str):
-            continue
-        content = content.strip()
-        if not content:
-            continue
-
-        kp_id = str(uuid.uuid4())
-        summary = content[:50] if len(content) > 50 else content
-
-        # Save to knowledge_points table
+    try:
         from db import execute_write
-        execute_write(
-            """INSERT INTO knowledge_points (id, content, summary, source_session_id)
-               VALUES (?, ?, ?, ?)""",
-            (kp_id, content, summary, str(node_id))
-        )
+        for content in knowledge_points:
+            if not content or not isinstance(content, str):
+                continue
+            content = content.strip()
+            if not content:
+                continue
 
-        # Link to session in knowledge_point_sessions table
-        kps_id = str(uuid.uuid4())
-        execute_write(
-            """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id)
-               VALUES (?, ?, ?)""",
-            (kps_id, kp_id, str(node_id))
-        )
+            kp_id = str(uuid.uuid4())
+            summary = content[:50] if len(content) > 50 else content
 
-        saved_points.append({
-            "id": kp_id,
-            "content": content,
-            "summary": summary
-        })
+            # Save to knowledge_points table
+            execute_write(
+                """INSERT INTO knowledge_points (id, content, summary, source_session_id)
+                   VALUES (?, ?, ?, ?)""",
+                (kp_id, content, summary, str(node_id))
+            )
+
+            # Link to session in knowledge_point_sessions table
+            kps_id = str(uuid.uuid4())
+            execute_write(
+                """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id)
+                   VALUES (?, ?, ?)""",
+                (kps_id, kp_id, str(node_id))
+            )
+
+            saved_points.append({
+                "id": kp_id,
+                "content": content,
+                "summary": summary
+            })
+    except Exception as e:
+        logger.error(f"Database error in extract_knowledge: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save knowledge points")
 
     return {"knowledge_points": saved_points}
 
@@ -541,7 +554,11 @@ async def match_knowledge(region_id: uuid.UUID, question: str = Query(..., descr
     ]
 
     # Call LLM (non-streaming)
-    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    try:
+        llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    except Exception as e:
+        logger.error(f"LLM error in match_knowledge: {e}")
+        raise HTTPException(status_code=500, detail="Failed to match knowledge points")
 
     # 5. Parse LLM response using helper
     matches = parse_llm_json_response(llm_response, "match_knowledge")
@@ -673,7 +690,11 @@ async def batch_merge(region_id: uuid.UUID):
     ]
 
     # Call LLM (non-streaming)
-    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    try:
+        llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
+    except Exception as e:
+        logger.error(f"LLM error in batch_merge: {e}")
+        raise HTTPException(status_code=500, detail="Failed to analyze knowledge points for merging")
 
     # 5. Parse LLM response using helper
     pairs = []
@@ -785,7 +806,12 @@ async def analyze_region(region_id: uuid.UUID):
         {"role": "system", "content": ANALYSIS_PROMPT},
         {"role": "user", "content": context}
     ]
-    return EventSourceResponse(stream_response("MiniMax-M2.7", messages))
+
+    try:
+        return EventSourceResponse(stream_response("MiniMax-M2.7", messages))
+    except Exception as e:
+        logger.error(f"LLM error in analyze_region: {e}")
+        raise HTTPException(status_code=500, detail="Failed to analyze region")
 
 
 # ============ Health Check ============

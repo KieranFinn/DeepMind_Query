@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from routes import router
 from contextlib import asynccontextmanager
+from middleware.error_handler import register_exception_handlers
 import os
 import logging
 
@@ -36,6 +37,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Register global exception handlers (must be after app creation)
+register_exception_handlers(app)
 
 
 # API Key authentication middleware
