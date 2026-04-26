@@ -58,7 +58,7 @@ class CreateNodeRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=4000, description="Message content")
     model: str = "MiniMax-M2.7"
 
 
