@@ -175,6 +175,24 @@ async def rate_limit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# Global exception handling middleware - catches unhandled exceptions
+@app.middleware("http")
+async def exception_handling_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except HTTPException:
+        # HTTPException is raised by FastAPI/HTTP routers - re-raise to let FastAPI handle it
+        raise
+    except Exception as e:
+        # Log the actual exception with stack trace for debugging
+        logger.exception(f"Unhandled exception in request {request.method} {request.url.path}: {e}")
+        # Return generic error message without exposing internal details
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"}
+        )
+
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
