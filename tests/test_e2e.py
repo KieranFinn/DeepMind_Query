@@ -235,7 +235,8 @@ async def test_create_branch(authenticated_page: Page):
         # Check if a new session was created
         # Look for a new button with "分支" text
         branch_nodes = await page.query_selector_all("button:has-text('分支')")
-        assert len(branch_nodes) >= 1, "Expected at least one branch node to be created"
+        # Exactly 1 branch should be created from a double-click
+        assert len(branch_nodes) == 1, f"Expected exactly 1 branch node, found {len(branch_nodes)}"
 
     finally:
         # Cleanup
@@ -289,8 +290,8 @@ async def test_double_click_node(authenticated_page: Page):
         # Look for nodes with "分支" in the name
         branch_buttons = await page.query_selector_all("button:has-text('分支')")
 
-        # Verify at least one branch was created
-        assert len(branch_buttons) >= 1 or await page.locator("text=双击测试").count() >= 1
+        # Verify exactly 1 branch was created (double-click creates one child node)
+        assert len(branch_buttons) == 1, f"Expected exactly 1 branch button, found {len(branch_buttons)}"
 
     finally:
         if region_id:

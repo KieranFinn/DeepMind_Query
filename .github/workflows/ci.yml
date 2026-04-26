@@ -17,6 +17,21 @@ jobs:
         with:
           python-version: '3.9'
 
+      - name: Validate test configuration
+        run: |
+          # Path validation: ensure pytest.ini exists in backend/ before running tests
+          # This prevents tests from running in the wrong directory
+          cd backend
+          if [ ! -f "pytest.ini" ] && [ ! -f "pyproject.toml" ]; then
+            echo "ERROR: No pytest.ini or pyproject.toml found in backend/"
+            exit 1
+          fi
+          echo "Found test configuration in backend/"
+          # Verify pytest.ini is present (not in root)
+          if [ -f "../pytest.ini" ] || [ -f "../pyproject.toml" ]; then
+            echo "WARNING: Found test config in root - ensure pytest runs from backend/ only"
+          fi
+
       - name: Install dependencies
         run: |
           cd backend
