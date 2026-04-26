@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from routes import router
 from contextlib import asynccontextmanager
 import os
+import secrets
 import logging
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ async def api_key_auth(request: Request, call_next):
             content={"detail": f"Missing {API_KEY_NAME} header"}
         )
 
-    if provided_key != API_KEY:
+    if not secrets.compare_digest(provided_key, API_KEY):
         logger.warning(f"Invalid API key attempt from {request.client.host}")
         return JSONResponse(
             status_code=401,
