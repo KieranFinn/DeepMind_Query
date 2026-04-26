@@ -108,15 +108,23 @@ async def request_id_middleware(request: Request, call_next):
     return response
 
 
-# CORS middleware - use explicit origins, not wildcard with credentials
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# CORS configuration from environment variable (comma-separated list)
+# Default to localhost for development
+_cors_env = os.getenv("CORS_ORIGINS", "")
+if _cors_env:
+    _cors_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
+else:
+    _cors_origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-    ],
+    ]
+
+# CORS middleware - use explicit origins, not wildcard with credentials
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", API_KEY_NAME],
