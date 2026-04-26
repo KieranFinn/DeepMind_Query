@@ -2,6 +2,7 @@
 from typing import Optional
 from store import store
 from models import Node, Graph
+from validators import context_validator
 
 
 class SessionService:
@@ -49,13 +50,18 @@ class SessionService:
 
     @staticmethod
     def get_conversation_context(region_id: str, node_id: str) -> list[dict]:
-        """Build conversation context for LLM"""
+        """Build conversation context for LLM with context window validation"""
         node = store.get_node(region_id, node_id)
         if not node:
             return []
         messages = []
         for msg in node.messages:
             messages.append({"role": msg.role, "content": msg.content})
+        # Apply context window validation and truncate if needed
+        context_validation = context_validator.validate_messages(messages)
+        if not context_validation.valid:
+            # Truncate to max messages, keeping most recent
+            messages = context_validator.truncate_messages(messages, keep_recent=True)
         return messages
 
 

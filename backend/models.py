@@ -58,7 +58,7 @@ class CreateNodeRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=10000, description="Message content (max 10000 chars)")
     model: str = "MiniMax-M2.7"
 
 
@@ -81,14 +81,14 @@ class KnowledgePointSession(BaseModel):
 
 
 class CreateKnowledgePointRequest(BaseModel):
-    content: str = Field(..., description="The knowledge point content")
+    content: str = Field(..., max_length=5000, description="The knowledge point content (max 5000 chars)")
     summary: Optional[str] = Field(None, max_length=500)
     source_session_id: Optional[UUID] = None
 
 
 class MergeCheckRequest(BaseModel):
     """Request for checking if new content matches existing knowledge points"""
-    content: str = Field(..., description="The new knowledge point content to check")
+    content: str = Field(..., max_length=10000, description="The new knowledge point content to check (max 10000 chars)")
     threshold: Optional[float] = Field(0.8, description="Similarity threshold (0-1)")
 
 

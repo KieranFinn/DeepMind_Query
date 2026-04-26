@@ -156,6 +156,7 @@ from models import (
 from services.region_service import region_service
 from services.session_service import session_service
 from services.llm_service import llm_service
+from validators import content_validator, context_validator, rate_limiter
 
 router = APIRouter(prefix="/api", tags=["knowledge-regions"])
 
@@ -288,11 +289,22 @@ async def send_message(region_id: uuid.UUID, node_id: uuid.UUID, req: SendMessag
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
+    # Validate content length via unified validator
+    content_validation = content_validator.validate_content(req.content)
+    if not content_validation.valid:
+        raise HTTPException(status_code=400, detail=content_validation.error_message)
+
     node = session_service.get_node(str(region_id), str(node_id))
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
 
     messages = session_service.get_conversation_context(str(region_id), str(node_id))
+
+    # Validate context window via unified validator
+    context_validation = context_validator.validate_messages(messages)
+    if not context_validation.valid:
+        raise HTTPException(status_code=400, detail=context_validation.error_message)
+
     session_service.add_message(str(region_id), str(node_id), "user", req.content.strip())
     messages.append({"role": "user", "content": req.content.strip()})
 
@@ -578,6 +590,11 @@ async def merge_check(region_id: uuid.UUID, req: MergeCheckRequest):
 
     Returns suggestions for merging with existing knowledge points.
     """
+    # Validate content length via unified validator
+    content_validation = content_validator.validate_content(req.content)
+    if not content_validation.valid:
+        raise HTTPException(status_code=400, detail=content_validation.error_message)
+
     # 1. Validate region exists
     region = region_service.get_region(str(region_id))
     if not region:
