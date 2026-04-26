@@ -123,18 +123,121 @@ app.add_middleware(
 )
 
 
-# Simple rate limiting middleware (token bucket per IP)
+# Rate limiting middleware (token bucket per IP)
+# Supports both in-memory (single-instance) and Redis (multi-instance) modes
 from collections import defaultdict
 from time import time
+import os
 
 RATE_LIMIT_TOKENS = 10  # Max requests
 RATE_LIMIT_REFILL = 60  # Seconds to refill bucket
+RATE_LIMIT_KEY_PREFIX = "ratelimit:"
 
+# In-memory fallback for single-instance deployments
 rate_limit_data = defaultdict(lambda: {"tokens": RATE_LIMIT_TOKENS, "last_refill": time()})
+
+# Redis-based rate limiter for multi-instance deployments
+_redis_client = None
+
+
+def _get_redis_client():
+    """Get or create Redis client. Returns None if Redis is not configured."""
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        return None
+
+    try:
+        import redis
+        _redis_client = redis.from_url(redis_url, decode_responses=True)
+        # Test connection
+        _redis_client.ping()
+        logger.info(f"Redis rate limiting enabled: {redis_url}")
+        return _redis_client
+    except Exception as e:
+        logger.warning(f"Redis connection failed, falling back to in-memory rate limiting: {e}")
+        _redis_client = None
+        return None
 
 
 def check_rate_limit(client_ip: str) -> bool:
-    """Returns True if request is allowed, False if rate limited"""
+    """Returns True if request is allowed, False if rate limited.
+
+    Uses Redis for distributed rate limiting when REDIS_URL is configured,
+    otherwise falls back to in-memory token bucket.
+    """
+    redis_client = _get_redis_client()
+
+    if redis_client is not None:
+        return _check_rate_limit_redis(redis_client, client_ip)
+    else:
+        return _check_rate_limit_memory(client_ip)
+
+
+def _check_rate_limit_redis(redis_client, client_ip: str) -> bool:
+    """Redis-based token bucket rate limiting (atomic Lua script)."""
+    key = f"{RATE_LIMIT_KEY_PREFIX}{client_ip}"
+    now = time()
+
+    # Lua script for atomic token bucket operation
+    lua_script = """
+    local key = KEYS[1]
+    local tokens_key = key .. ":tokens"
+    local time_key = key .. ":time"
+    local max_tokens = tonumber(ARGV[1])
+    local refill_rate = tonumber(ARGV[2])
+    local now = tonumber(ARGV[3])
+
+    local tokens = tonumber(redis.call('GET', tokens_key))
+    local last_refill = tonumber(redis.call('GET', time_key))
+
+    if tokens == nil then
+        tokens = max_tokens
+        last_refill = now
+    end
+
+    -- Refill tokens based on time elapsed
+    local elapsed = now - last_refill
+    local tokens_to_add = (elapsed / refill_rate) * max_tokens
+    tokens = math.min(max_tokens, tokens + tokens_to_add)
+
+    if tokens >= 1 then
+        tokens = tokens - 1
+        redis.call('SET', tokens_key, tokens)
+        redis.call('SET', time_key, now)
+        redis.call('EXPIRE', tokens_key, 3600)
+        redis.call('EXPIRE', time_key, 3600)
+        return 1
+    else
+        redis.call('SET', tokens_key, tokens)
+        redis.call('SET', time_key, now)
+        redis.call('EXPIRE', tokens_key, 3600)
+        redis.call('EXPIRE', time_key, 3600)
+        return 0
+    end
+    """
+
+    try:
+        result = redis_client.eval(
+            lua_script,
+            1,
+            key,
+            RATE_LIMIT_TOKENS,
+            RATE_LIMIT_REFILL,
+            now
+        )
+        return result == 1
+    except Exception as e:
+        logger.error(f"Redis rate limit check failed: {e}")
+        # Fall back to memory on error
+        return _check_rate_limit_memory(client_ip)
+
+
+def _check_rate_limit_memory(client_ip: str) -> bool:
+    """In-memory token bucket rate limiting (for single-instance deployments)."""
     now = time()
     data = rate_limit_data[client_ip]
 
