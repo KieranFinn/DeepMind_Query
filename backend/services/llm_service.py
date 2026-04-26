@@ -5,12 +5,32 @@ import json
 import hashlib
 import logging
 import warnings
+import contextvars
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 load_dotenv()
+
+# Context variable for secure API key storage - avoids passing via function parameters
+# which can leak into logs, stack traces, or monitoring systems
+_api_key_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("api_key", default=None)
+
+
+def set_api_key(api_key: Optional[str]) -> None:
+    """Set the API key in the current context (secure, no function parameters)."""
+    _api_key_ctx.set(api_key)
+
+
+def get_api_key() -> Optional[str]:
+    """Get the API key from the current context."""
+    return _api_key_ctx.get()
+
+
+def clear_api_key() -> None:
+    """Clear the API key from the current context."""
+    _api_key_ctx.set(None)
 
 # Cache settings
 LLM_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
@@ -78,14 +98,14 @@ class LLMProvider(ABC):
 
     @abstractmethod
     async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion"""
         pass
 
     @abstractmethod
     async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> str:
         """Non-streaming chat completion"""
         pass
@@ -98,11 +118,11 @@ class MiniMaxProvider(LLMProvider):
         self.base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
 
     async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion from MiniMax Anthropic API"""
-        # Check for new MINIMAX_API_KEY first, fall back to ANTHROPIC_API_KEY with warning
-        key = api_key or os.getenv("MINIMAX_API_KEY", "")
+        # Check context first, then fall back to env var
+        key = get_api_key() or os.getenv("MINIMAX_API_KEY", "")
         if not key:
             old_key = os.getenv("ANTHROPIC_API_KEY", "")
             if old_key:
@@ -160,11 +180,11 @@ class MiniMaxProvider(LLMProvider):
                             logger.warning(f"Stream processing error: {e}")
 
     async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> str:
         """Non-streaming chat completion"""
         full_response = ""
-        async for chunk in self.stream_chat(model, messages, api_key):
+        async for chunk in self.stream_chat(model, messages):
             full_response += chunk
         return full_response
 
@@ -176,10 +196,10 @@ class AnthropicProvider(LLMProvider):
         self.base_url = "https://api.anthropic.com"
 
     async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion from official Anthropic API"""
-        key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        key = get_api_key() or os.getenv("ANTHROPIC_API_KEY", "")
 
         if not key:
             yield "[Error] No API key configured. Set ANTHROPIC_API_KEY in .env"
@@ -229,11 +249,11 @@ class AnthropicProvider(LLMProvider):
                             logger.warning(f"Stream processing error: {e}")
 
     async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> str:
         """Non-streaming chat completion"""
         full_response = ""
-        async for chunk in self.stream_chat(model, messages, api_key):
+        async for chunk in self.stream_chat(model, messages):
             full_response += chunk
         return full_response
 
@@ -256,15 +276,15 @@ class LLMService:
         return self._minimax_provider
 
     async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> AsyncGenerator[str, None]:
         """Delegate to appropriate provider based on model"""
         provider = self._get_provider_for_model(model)
-        async for chunk in provider.stream_chat(model, messages, api_key):
+        async for chunk in provider.stream_chat(model, messages):
             yield chunk
 
     async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
+        self, model: str, messages: list[dict]
     ) -> str:
         """Delegate to appropriate provider based on model, with caching"""
         # Check cache first
@@ -273,9 +293,9 @@ class LLMService:
         if cached:
             return cached
 
-        # Call provider
+        # Call provider (API key retrieved from context via get_api_key())
         provider = self._get_provider_for_model(model)
-        response = await provider.chat(model, messages, api_key)
+        response = await provider.chat(model, messages)
 
         # Store in cache
         _set_cache_entry(model, messages_hash, response)
