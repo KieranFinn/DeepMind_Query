@@ -173,6 +173,17 @@ async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
 
 
+# Unified exception handler - prevents internal error details from leaking to clients
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions and return safe error response"""
+    logger.error(f"Unhandled exception in {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+
 # Include routes
 app.include_router(router)
 
