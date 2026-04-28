@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 from uuid import UUID, uuid4
-from backend.validators import (
+from validators import (
     CONTENT_MAX_LENGTH,
     CONTEXT_WINDOW_MAX_MESSAGES,
     SYSTEM_PROMPT_MAX_LENGTH,
