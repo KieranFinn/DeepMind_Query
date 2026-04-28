@@ -89,11 +89,12 @@ class SendMessageRequest(BaseModel):
 
 
 class KnowledgePoint(BaseModel):
-    """A knowledge point extracted from a session"""
+    """A knowledge point extracted from a session, directly owned by a region"""
     id: UUID = Field(default_factory=uuid4)
+    region_id: UUID  # Direct region ownership (eliminates JOIN through knowledge_point_sessions)
     content: str = Field(max_length=CONTENT_MAX_LENGTH)
     summary: Optional[str] = None
-    source_session_id: Optional[UUID] = None  # Which session extracted this
+    source_node_id: Optional[UUID] = None  # Which node/session extracted this
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -105,18 +106,10 @@ class KnowledgePoint(BaseModel):
         return v
 
 
-class KnowledgePointSession(BaseModel):
-    """Many-to-many relationship between knowledge points and sessions"""
-    id: UUID = Field(default_factory=uuid4)
-    knowledge_point_id: UUID
-    session_id: UUID  # FK to nodes
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
 class CreateKnowledgePointRequest(BaseModel):
     content: str = Field(..., description="The knowledge point content", max_length=CONTENT_MAX_LENGTH)
     summary: Optional[str] = Field(None, max_length=500)
-    source_session_id: Optional[UUID] = None
+    source_node_id: Optional[UUID] = None
 
     @field_validator("content")
     @classmethod

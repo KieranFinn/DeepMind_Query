@@ -166,44 +166,46 @@ export default function ConversationPanel() {
           </p>
         )}
 
-        {messages.map((msg: Message, i: number) => (
-          <div
-            key={`${msg.created_at}-${i}`}
-            className="message-enter flex animate-fade-in"
-            style={{ justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}
-          >
+        {messages
+          .filter((msg: Message) => msg.role !== 'system')  // Hide internal context messages
+          .map((msg: Message, i: number) => (
             <div
-              className="group relative px-4 py-3 rounded-2xl max-w-[85%] transition-all hover:shadow-lg"
-              style={{
-                backgroundColor: msg.role === 'user' ? 'var(--user-bubble)' : 'var(--assistant-bubble)',
-                border: `1px solid ${msg.role === 'user' ? 'var(--border-light)' : 'var(--border)'}`,
-                borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-              }}
+              key={`${msg.created_at}-${i}`}
+              className="message-enter flex animate-fade-in"
+              style={{ justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}
             >
-              {msg.role === 'user' ? (
-                <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-                  {msg.content}
-                </p>
-              ) : (
-                <div className="markdown-content text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex, rehypeHighlight]}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
-              )}
-              <button
-                onClick={() => copyMessage(msg.content, i)}
-                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-xs px-2 py-1 rounded transition-all hover:scale-105"
-                style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-muted)' }}
+              <div
+                className="group relative px-4 py-3 rounded-2xl max-w-[85%] transition-all hover:shadow-lg"
+                style={{
+                  backgroundColor: msg.role === 'user' ? 'var(--user-bubble)' : 'var(--assistant-bubble)',
+                  border: `1px solid ${msg.role === 'user' ? 'var(--border-light)' : 'var(--border)'}`,
+                  borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                }}
               >
-                {copiedIndex === i ? '✓' : '📋'}
-              </button>
+                {msg.role === 'user' ? (
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                    {msg.content}
+                  </p>
+                ) : (
+                  <div className="markdown-content text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                <button
+                  onClick={() => copyMessage(msg.content, i)}
+                  className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-xs px-2 py-1 rounded transition-all hover:scale-105"
+                  style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-muted)' }}
+                >
+                  {copiedIndex === i ? '✓' : '📋'}
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
 
         {streamingMessage && (
           <div className="flex justify-start message-enter animate-fade-in">

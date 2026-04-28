@@ -111,22 +111,12 @@ CREATE TABLE IF NOT EXISTS messages (
 KNOWLEDGE_POINTS_TABLE = """
 CREATE TABLE IF NOT EXISTS knowledge_points (
     id TEXT PRIMARY KEY,
+    region_id TEXT NOT NULL,
     content TEXT NOT NULL,
     summary TEXT,
-    source_session_id TEXT,
+    source_node_id TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-"""
-
-KNOWLEDGE_POINT_SESSIONS_TABLE = """
-CREATE TABLE IF NOT EXISTS knowledge_point_sessions (
-    id TEXT PRIMARY KEY,
-    knowledge_point_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (knowledge_point_id) REFERENCES knowledge_points(id) ON DELETE CASCADE,
-    FOREIGN KEY (session_id) REFERENCES nodes(id) ON DELETE CASCADE
 )
 """
 
@@ -156,7 +146,6 @@ def init_all_tables():
         cursor.execute(EDGES_TABLE)
         cursor.execute(MESSAGES_TABLE)
         cursor.execute(KNOWLEDGE_POINTS_TABLE)
-        cursor.execute(KNOWLEDGE_POINT_SESSIONS_TABLE)
         cursor.execute(LLM_CACHE_TABLE)
         cursor.execute(LLM_CACHE_INDEX)
 
@@ -165,4 +154,3 @@ def init_knowledge_points_tables():
     """Initialize knowledge points tables if they don't exist."""
     with get_cursor() as cursor:
         cursor.execute(KNOWLEDGE_POINTS_TABLE)
-        cursor.execute(KNOWLEDGE_POINT_SESSIONS_TABLE)

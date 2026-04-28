@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime
 from typing import Optional
 from db import get_cursor
-from models import KnowledgeRegion, Graph, Node, Edge, Message, KnowledgePoint, KnowledgePointSession, CreateKnowledgePointRequest
+from models import KnowledgeRegion, Graph, Node, Edge, Message, KnowledgePoint, CreateKnowledgePointRequest
 
 
 class ConversationStore:
@@ -353,32 +353,27 @@ class ConversationStore:
         return self.regions[region_id].graph
 
     # Knowledge Point operations
-    def create_knowledge_point(self, content: str, session_id: str = None, summary: str = None, source_session_id: str = None) -> Optional[KnowledgePoint]:
-        """Create a new knowledge point and optionally link it to a session."""
+    def create_knowledge_point(self, region_id: str, content: str, summary: str = None, source_node_id: str = None) -> Optional[KnowledgePoint]:
+        """Create a new knowledge point directly owned by a region."""
         kp_id = str(uuid.uuid4())
         now = datetime.utcnow()
 
         with get_cursor() as cursor:
             cursor.execute(
-                """INSERT INTO knowledge_points (id, content, summary, source_session_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (kp_id, content, summary, source_session_id, now, now)
+                """INSERT INTO knowledge_points (id, region_id, content, summary, source_node_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (kp_id, region_id, content, summary, source_node_id, now, now)
             )
 
-        kp = KnowledgePoint(
+        return KnowledgePoint(
             id=kp_id,
+            region_id=uuid.UUID(region_id),
             content=content,
             summary=summary,
-            source_session_id=source_session_id,
+            source_node_id=uuid.UUID(source_node_id) if source_node_id else None,
             created_at=now,
             updated_at=now,
         )
-
-        # If session_id provided, link the knowledge point to the session
-        if session_id:
-            self.link_knowledge_point_to_session(kp_id, session_id)
-
-        return kp
 
     def get_knowledge_point(self, kp_id: str) -> Optional[KnowledgePoint]:
         """Get a knowledge point by ID."""
@@ -390,91 +385,51 @@ class ConversationStore:
                 return None
             return KnowledgePoint(
                 id=str(row['id']),
+                region_id=uuid.UUID(row['region_id']),
                 content=row['content'],
                 summary=row['summary'],
-                source_session_id=str(row['source_session_id']) if row['source_session_id'] else None,
+                source_node_id=str(row['source_node_id']) if row['source_node_id'] else None,
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
             )
 
-    def get_knowledge_points_for_session(self, session_id: str) -> list[KnowledgePoint]:
-        """Get all knowledge points linked to a session."""
-        session_id = str(session_id)
+    def get_knowledge_points_for_node(self, node_id: str) -> list[KnowledgePoint]:
+        """Get all knowledge points extracted from a specific node/session."""
+        node_id = str(node_id)
         with get_cursor() as cursor:
             cursor.execute(
-                """SELECT kp.* FROM knowledge_points kp
-                   JOIN knowledge_point_sessions kps ON kp.id = kps.knowledge_point_id
-                   WHERE kps.session_id = ?
-                   ORDER BY kps.created_at""",
-                (session_id,)
+                "SELECT * FROM knowledge_points WHERE source_node_id = ? ORDER BY created_at",
+                (node_id,)
             )
             results = []
             for row in cursor.fetchall():
                 results.append(KnowledgePoint(
                     id=str(row['id']),
+                    region_id=uuid.UUID(row['region_id']),
                     content=row['content'],
                     summary=row['summary'],
-                    source_session_id=str(row['source_session_id']) if row['source_session_id'] else None,
+                    source_node_id=str(row['source_node_id']) if row['source_node_id'] else None,
                     created_at=row['created_at'],
                     updated_at=row['updated_at'],
                 ))
             return results
 
-    def link_knowledge_point_to_session(self, kp_id: str, session_id: str) -> Optional[KnowledgePointSession]:
-        """Link a knowledge point to a session."""
-        kp_id = str(kp_id)
-        session_id = str(session_id)
-        kps_id = str(uuid.uuid4())
-        now = datetime.utcnow()
-
-        with get_cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (kps_id, kp_id, session_id, now)
-            )
-
-        return KnowledgePointSession(
-            id=kps_id,
-            knowledge_point_id=kp_id,
-            session_id=session_id,
-            created_at=now,
-        )
-
     def delete_knowledge_point(self, kp_id: str) -> bool:
-        """Delete a knowledge point and its session links."""
+        """Delete a knowledge point."""
         kp_id = str(kp_id)
         with get_cursor() as cursor:
-            # Delete the knowledge point (session links will cascade due to FK constraint)
             cursor.execute("DELETE FROM knowledge_points WHERE id = ?", (kp_id,))
             return cursor.rowcount > 0
 
     def get_knowledge_points_for_region(self, region_id: str) -> list[dict]:
         """
-        Get all knowledge points for a region (from all sessions/nodes in that region).
+        Get all knowledge points directly owned by a region.
         Returns list of dicts with 'id' and 'content' keys.
         """
         with get_cursor() as cursor:
-            # Get all node IDs for this region
             cursor.execute(
-                "SELECT id FROM nodes WHERE region_id = ?",
+                "SELECT id, content, summary, source_node_id, created_at, updated_at FROM knowledge_points WHERE region_id = ? ORDER BY created_at",
                 (region_id,)
-            )
-            node_rows = cursor.fetchall()
-            node_ids = [str(row['id']) for row in node_rows]
-
-            if not node_ids:
-                return []
-
-            # Get knowledge_point_ids linked to those nodes via knowledge_point_sessions
-            placeholders = ','.join(['?'] * len(node_ids))
-            cursor.execute(
-                f"""SELECT DISTINCT kp.id, kp.content, kp.summary, kp.source_session_id,
-                           kp.created_at, kp.updated_at
-                    FROM knowledge_points kp
-                    JOIN knowledge_point_sessions kps ON kp.id = kps.knowledge_point_id
-                    WHERE kps.session_id IN ({placeholders})""",
-                tuple(node_ids)
             )
             results = []
             for row in cursor.fetchall():
@@ -482,7 +437,7 @@ class ConversationStore:
                     "id": str(row['id']),
                     "content": row['content'],
                     "summary": row['summary'],
-                    "source_session_id": str(row['source_session_id']) if row['source_session_id'] else None,
+                    "source_node_id": str(row['source_node_id']) if row['source_node_id'] else None,
                 })
             return results
 

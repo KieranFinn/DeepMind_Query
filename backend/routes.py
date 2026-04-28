@@ -141,7 +141,7 @@ async def stream_response(model: str, messages: list[dict], region_id: str = Non
         async for chunk in llm_service.stream_chat(model, messages, session_id=node_id):
             full_response += chunk
             yield {"event": "message", "data": json.dumps({"content": chunk})}
-        if full_response and region_id and node_id:
+        if full_response and region_id and node_id and not full_response.startswith('[Error'):
             session_service.add_message(region_id, node_id, "assistant", full_response)
     except Exception as e:
         logger.warning(f"stream_response error: {e}")
@@ -264,13 +264,13 @@ async def update_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str = Que
 
 @router.get("/regions/{region_id}/graph/nodes/{node_id}/knowledge")
 async def get_node_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
-    """Get knowledge points linked to a specific node"""
+    """Get knowledge points extracted from a specific node"""
     node = session_service.get_node(str(region_id), str(node_id))
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
 
-    # Get knowledge points linked to this session via knowledge_point_sessions
-    knowledge_points = store.get_knowledge_points_for_session(str(node_id))
+    # Get knowledge points directly by source_node_id
+    knowledge_points = store.get_knowledge_points_for_node(str(node_id))
 
     # Format response to match frontend KnowledgePoint interface
     return [
@@ -278,7 +278,7 @@ async def get_node_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
             "id": kp.id,
             "title": kp.summary or kp.content[:30],
             "content": kp.content,
-            "score": None,  # Historical KPs don't have relevance scores
+            "score": None,
             "node_id": str(node_id)
         }
         for kp in knowledge_points
@@ -289,7 +289,8 @@ async def get_node_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
 
 @router.post("/regions/{region_id}/graph/nodes/{node_id}/message")
 async def send_message(region_id: uuid.UUID, node_id: uuid.UUID, req: SendMessageRequest):
-    """Send a message to a node and stream the assistant response"""
+    """Send a message to a node and stream the assistant response.
+    Injects region knowledge points as system context (CrewAI shared pool simplified)."""
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="Message content cannot be empty")
 
@@ -297,7 +298,21 @@ async def send_message(region_id: uuid.UUID, node_id: uuid.UUID, req: SendMessag
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
 
+    # 1. Build conversation context (includes parent summaries if child node)
     messages = session_service.get_conversation_context(str(region_id), str(node_id))
+
+    # 2. 【关键】检索区域知识点，合并到 system message（CrewAI shared pool simplified）
+    region_kps = store.get_knowledge_points_for_region(str(region_id))
+    if region_kps:
+        kp_text = "\n".join(f"- {kp['content']}" for kp in region_kps[:5])
+        kp_prompt = f"【区域相关知识】\n{kp_text}"
+        # Merge into existing system message or create new one
+        if messages and messages[0]["role"] == "system":
+            messages[0]["content"] = messages[0]["content"] + "\n\n" + kp_prompt
+        else:
+            messages.insert(0, {"role": "system", "content": kp_prompt})
+
+    # 3. Append user message
     session_service.add_message(str(region_id), str(node_id), "user", req.content.strip())
     messages.append({"role": "user", "content": req.content.strip()})
 
@@ -308,8 +323,8 @@ async def send_message(region_id: uuid.UUID, node_id: uuid.UUID, req: SendMessag
 
 @router.post("/regions/{region_id}/graph/nodes/{node_id}/children", response_model=dict)
 async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str = Query(None, description="Title for the new child node")):
-    """Create a child node (branch) - creates edge from parent to child"""
-    # Get parent node for knowledge matching
+    """Create a child node (branch) - creates edge from parent to child.
+    If title is provided (follow-up), seed child with parent context + role definition."""
     parent = session_service.get_node(str(region_id), str(node_id))
     if not parent:
         raise HTTPException(status_code=404, detail="Parent node not found")
@@ -319,63 +334,16 @@ async def create_child_node(region_id: uuid.UUID, node_id: uuid.UUID, title: str
     if not child:
         raise HTTPException(status_code=404, detail="Node not found or failed to create child")
 
-    # Match knowledge points from parent's first user message
-    matched_knowledge_points = []
-    if parent.messages:
-        # Get the first user message as the question
-        question = None
-        for msg in parent.messages:
-            if msg.role == "user":
-                question = msg.content
-                break
+    # Seed follow-up context: parent summary + role definition (CrewAI/LangGraph simplified)
+    if title:
+        session_service.seed_follow_up_context(
+            str(region_id), str(child.id), str(node_id), title
+        )
 
-        if question:
-            # Get all knowledge points for this region
-            knowledge_points = store.get_knowledge_points_for_region(str(region_id))
+    # Get relevant knowledge points for the region (lightweight, no LLM call)
+    knowledge_points = store.get_knowledge_points_for_region(str(region_id))
 
-            if knowledge_points:
-                # Build knowledge points list for the prompt
-                knowledge_points_list = []
-                for kp in knowledge_points:
-                    knowledge_points_list.append(f"ID: {kp['id']}\n内容: {kp['content']}")
-
-                kp_list_str = "\n\n".join(knowledge_points_list)
-
-                # Call LLM to find relevant knowledge points
-                prompt = MATCH_PROMPT.format(
-                    question=question,
-                    knowledge_points_list=kp_list_str
-                )
-                llm_messages = [
-                    {"role": "system", "content": "You are a helpful knowledge management assistant that outputs valid JSON."},
-                    {"role": "user", "content": prompt}
-                ]
-
-                # Call LLM (non-streaming)
-                try:
-                    llm_response = await llm_service.chat("MiniMax-M2.7", llm_messages)
-
-                    # Parse LLM response using helper
-                    matches = parse_llm_json_response(llm_response, "match_knowledge")
-                    if not isinstance(matches, list):
-                        matches = []
-
-                    # Build final response with content
-                    kp_dict = {kp['id']: kp for kp in knowledge_points}
-                    for match in matches[:5]:  # Limit to 5
-                        if isinstance(match, dict) and 'id' in match:
-                            kp_id = match['id']
-                            if kp_id in kp_dict:
-                                matched_knowledge_points.append({
-                                    "id": kp_id,
-                                    "content": kp_dict[kp_id]['content'],
-                                    "reason": match.get('reason', '')
-                                })
-                except Exception as e:
-                    # If LLM fails, still return child node with empty matched_knowledge_points
-                    logger.warning(f"LLM matching failed in create_child_node: {e}")
-
-    return {"node": child, "matched_knowledge_points": matched_knowledge_points}
+    return {"node": child, "matched_knowledge_points": knowledge_points[:5] if knowledge_points else []}
 
 
 @router.post("/regions/{region_id}/graph/nodes/{node_id}/suggest-branches")
@@ -470,7 +438,7 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
     if not isinstance(knowledge_points, list):
         knowledge_points = []
 
-    # 6. Save knowledge points and link to session
+    # 6. Save knowledge points directly to region (no intermediate table)
     saved_points = []
     for content in knowledge_points:
         if not content or not isinstance(content, str):
@@ -479,30 +447,19 @@ async def extract_knowledge(region_id: uuid.UUID, node_id: uuid.UUID):
         if not content:
             continue
 
-        kp_id = str(uuid.uuid4())
-        summary = content[:50] if len(content) > 50 else content
-
-        # Save to knowledge_points table
-        from db import execute_write
-        execute_write(
-            """INSERT INTO knowledge_points (id, content, summary, source_session_id)
-               VALUES (?, ?, ?, ?)""",
-            (kp_id, content, summary, str(node_id))
+        kp = store.create_knowledge_point(
+            region_id=str(region_id),
+            content=content,
+            summary=content[:50] if len(content) > 50 else content,
+            source_node_id=str(node_id)
         )
 
-        # Link to session in knowledge_point_sessions table
-        kps_id = str(uuid.uuid4())
-        execute_write(
-            """INSERT INTO knowledge_point_sessions (id, knowledge_point_id, session_id)
-               VALUES (?, ?, ?)""",
-            (kps_id, kp_id, str(node_id))
-        )
-
-        saved_points.append({
-            "id": kp_id,
-            "content": content,
-            "summary": summary
-        })
+        if kp:
+            saved_points.append({
+                "id": str(kp.id),
+                "content": kp.content,
+                "summary": kp.summary
+            })
 
     return {"knowledge_points": saved_points}
 
