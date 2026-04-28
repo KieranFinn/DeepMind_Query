@@ -59,9 +59,21 @@ async function streamSSE(
             const errData = JSON.parse(sseEvent.data);
             throw new Error(errData.error || 'Stream error');
           }
-          if (sseEvent.data) {
+          // Backend sends flat format: {"content": "..."}
+          // Some paths send nested format: {"event": "message", "data": "{\"content\": \"...\"}"}
+          if (sseEvent.data && typeof sseEvent.data === 'string') {
             const inner = JSON.parse(sseEvent.data);
             const text = inner.content || '';
+            if (text) {
+              fullContent += text;
+              const now = Date.now();
+              if (!throttleMs || now - lastUpdateTime >= throttleMs) {
+                onChunk(fullContent);
+                lastUpdateTime = now;
+              }
+            }
+          } else if (sseEvent.content !== undefined) {
+            const text = sseEvent.content || '';
             if (text) {
               fullContent += text;
               const now = Date.now();
@@ -574,8 +586,9 @@ export const useStore = create<AppState>()(
 
         // Don't refetch if already pending for same node
         if (followUpPending && followUpNodeId === nodeId) return;
-        // Don't refetch if already have suggestions for this node
-        if (followUpReady && followUpNodeId === nodeId) return;
+        // Don't refetch if already have valid suggestions for this node
+        const { followUpDirections } = get();
+        if (followUpReady && followUpNodeId === nodeId && followUpDirections.length > 0) return;
 
         const controller = new AbortController();
         set({
@@ -619,10 +632,11 @@ export const useStore = create<AppState>()(
             summary = fullContent.slice(0, 100).replace(/[#*]/g, '').trim() + '...';
           }
 
+          const validDirections = directions.filter(Boolean);
           set({
             followUpSummary: summary,
-            followUpDirections: directions.filter(Boolean),
-            followUpReady: true,
+            followUpDirections: validDirections,
+            followUpReady: summary.length > 0 || validDirections.length > 0,
             followUpPending: false,
           });
         } catch (e) {
