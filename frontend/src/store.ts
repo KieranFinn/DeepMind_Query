@@ -706,7 +706,6 @@ export const useStore = create<AppState>()(
       name: 'deepmind-query-storage',
       partialize: (state) => ({
         activeRegionId: state.activeRegionId,
-        activeNodeId: state.activeNodeId,
         selectedModel: state.selectedModel,
       }),
       onRehydrateStorage: () => (state) => {

@@ -10,7 +10,9 @@ import { useStore } from '../store';
 
 const nodeTypes = { nodeCard: NodeCard, knowledgePoint: KnowledgePointCard };
 
-// Simple force-directed layout
+/* ------------------------------------------------------------------ */
+/*  Force-directed layout                                              */
+/* ------------------------------------------------------------------ */
 function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[] {
   if (nodes.length === 0) return nodes;
 
@@ -27,7 +29,6 @@ function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[]
   const centerX = 160;
   const centerY = 120;
 
-  // Build adjacency for attraction calculation
   const adjacency = new Map<string, Set<string>>();
   nodesCopy.forEach(n => adjacency.set(n.id, new Set()));
   edges.forEach(e => {
@@ -36,7 +37,6 @@ function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[]
   });
 
   for (let iter = 0; iter < iterations; iter++) {
-    // Repulsion between all nodes
     for (let i = 0; i < nodesCopy.length; i++) {
       for (let j = i + 1; j < nodesCopy.length; j++) {
         const dx = nodesCopy[j].position.x - nodesCopy[i].position.x;
@@ -52,7 +52,6 @@ function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[]
       }
     }
 
-    // Attraction along edges
     edges.forEach(edge => {
       const source = nodesCopy.find(n => n.id === edge.source);
       const target = nodesCopy.find(n => n.id === edge.target);
@@ -69,13 +68,11 @@ function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[]
       target.vy -= fy;
     });
 
-    // Center gravity
     nodesCopy.forEach(node => {
       node.vx += (centerX - node.position.x) * 0.01;
       node.vy += (centerY - node.position.y) * 0.01;
     });
 
-    // Apply velocities with damping
     nodesCopy.forEach(node => {
       node.position.x += node.vx;
       node.position.y += node.vy;
@@ -84,7 +81,6 @@ function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[]
     });
   }
 
-  // Normalize positions to be non-negative and centered
   let minX = Infinity, minY = Infinity;
   nodesCopy.forEach(n => {
     minX = Math.min(minX, n.position.x);
@@ -99,19 +95,40 @@ function applyForceLayout(nodes: Node[], edges: any[], iterations = 100): Node[]
   }));
 }
 
+/* ------------------------------------------------------------------ */
+/*  Component                                                          */
+/* ------------------------------------------------------------------ */
 interface DraggableKnowledgeGraphProps {
   sidebarCollapsed: boolean;
 }
 
 export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableKnowledgeGraphProps) {
-  const { graph, activeNodeId, getActiveRegion, createChildNode, setActiveNode, isBigBangAnalyzing, bigBangResult, bigBangRegionId, activeRegionId, activeNodeKnowledgePoints, fetchKnowledgePointsForNode } = useStore();
+  const {
+    graph,
+    activeNodeId,
+    getActiveRegion,
+    createChildNode,
+    setActiveNode,
+    isBigBangAnalyzing,
+    bigBangResult,
+    bigBangRegionId,
+    activeRegionId,
+    activeNodeKnowledgePoints,
+    fetchKnowledgePointsForNode,
+  } = useStore();
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   const [isDocked, setIsDocked] = useState(true);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [layoutMode, setLayoutMode] = useState<'dagre' | 'force'>('dagre');
+
+  const SIDEBAR_WIDTH = sidebarCollapsed ? 32 : 280;
+  const DOCKED_HEIGHT = 160;
+
+  /* refs */
   const dragState = useRef<{
     isDragging: boolean;
     startMouseX: number;
@@ -122,6 +139,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     element: HTMLElement | null;
     currentMouseX: number;
     currentMouseY: number;
+    wasDocked: boolean;
   }>({
     isDragging: false,
     startMouseX: 0,
@@ -132,16 +150,32 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     element: null,
     currentMouseX: 0,
     currentMouseY: 0,
+    wasDocked: false,
   });
+
   const containerRef = useRef<HTMLDivElement>(null);
   const rfInstance = useRef<any>(null);
+  const userPositions = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const lastGraphKeyRef = useRef('');
+  const fitViewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasInitialPositionRef = useRef(false);
 
   const activeRegion = getActiveRegion();
   const nodeCount = graph?.nodes.length || 0;
-  const SIDEBAR_WIDTH = sidebarCollapsed ? 32 : 280;
-  const DOCKED_HEIGHT = 160;
 
-  // Hide ReactFlow attribution
+  /* ---------------------------------------------------------------- */
+  /*  Initial floating position                                        */
+  /* ---------------------------------------------------------------- */
+  useEffect(() => {
+    if (!hasInitialPositionRef.current) {
+      setPosition({ x: SIDEBAR_WIDTH, y: 100 });
+      hasInitialPositionRef.current = true;
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---------------------------------------------------------------- */
+  /*  Hide ReactFlow attribution (cleaned up on unmount)               */
+  /* ---------------------------------------------------------------- */
   useEffect(() => {
     const styleId = 'hide-react-flow-attribution';
     if (!document.getElementById(styleId)) {
@@ -150,35 +184,71 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       style.textContent = '.react-flow__attribution { display: none !important; }';
       document.head.appendChild(style);
     }
+    return () => {
+      const existing = document.getElementById(styleId);
+      if (existing) document.head.removeChild(existing);
+    };
   }, []);
 
-  // Build nodes and edges from graph
+  /* ---------------------------------------------------------------- */
+  /*  Window resize handler                                            */
+  /* ---------------------------------------------------------------- */
+  useEffect(() => {
+    const handleResize = () => {
+      if (!isDocked && !isCollapsed && position) {
+        setPosition(prev => {
+          if (!prev) return prev;
+          return {
+            x: Math.min(prev.x, window.innerWidth - 320),
+            y: Math.min(prev.y, window.innerHeight - 240),
+          };
+        });
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [isDocked, isCollapsed, position]);
+
+  /* ---------------------------------------------------------------- */
+  /*  Build nodes & edges from graph                                   */
+  /* ---------------------------------------------------------------- */
   useEffect(() => {
     if (!graph) {
       setNodes([]);
       setEdges([]);
+      lastGraphKeyRef.current = '';
       return;
     }
 
     const currentGraph = graph;
+    const graphKey = JSON.stringify({
+      nodeIds: currentGraph.nodes.map(n => n.id).sort(),
+      edgeIds: currentGraph.edges.map(e => e.id).sort(),
+      activeNodeId,
+      kpIds: activeNodeKnowledgePoints.map(kp => kp.id).sort(),
+    });
+
+    const isSameGraph = lastGraphKeyRef.current === graphKey;
+    lastGraphKeyRef.current = graphKey;
+
     const newNodes: Node[] = [];
     const newEdges: any[] = [];
     const yStep = 60;
     const xStep = 100;
-
-    // Track positions of session nodes for KP placement
-    const nodePositions: Map<string, { x: number; y: number }> = new Map();
+    const nodePositions = new Map<string, { x: number; y: number }>();
 
     function layoutNode(nodeId: string, depth: number, index: number, siblingCount: number) {
       const node = currentGraph.nodes.find(n => String(n.id) === nodeId);
       if (!node) return;
 
       const nodeIdStr = String(node.id);
+      const userPos = userPositions.current.get(nodeIdStr);
+
       const baseX = 60;
-      const nodeX = siblingCount > 0
+      const nodeX = userPos ? userPos.x : (siblingCount > 0
         ? baseX + (index - (siblingCount - 1) / 2) * xStep
-        : baseX;
-      const nodeY = depth * yStep + 20;
+        : baseX);
+      const nodeY = userPos ? userPos.y : depth * yStep + 20;
 
       newNodes.push({
         id: node.id,
@@ -193,7 +263,6 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         },
       });
 
-      // Store position for KP placement
       nodePositions.set(nodeIdStr, { x: nodeX, y: nodeY });
 
       const childEdges = currentGraph.edges.filter(e => String(e.source) === nodeIdStr);
@@ -205,7 +274,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           type: 'default',
           style: {
             stroke: activeRegion?.color || 'var(--accent)',
-            strokeWidth: 2
+            strokeWidth: 2,
           },
         });
         layoutNode(String(edge.target), depth + 1, i, childEdges.length);
@@ -217,11 +286,11 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       layoutNode(String(root.id), 0, i, rootNodes.length);
     });
 
-    // Add knowledge point nodes for the active node
+    // Knowledge point nodes for the active node
     const activeNodePos = activeNodeId ? nodePositions.get(String(activeNodeId)) : null;
     if (activeNodePos && activeNodeKnowledgePoints.length > 0) {
       const kpCount = activeNodeKnowledgePoints.length;
-      const kpStartX = activeNodePos.x + 120; // Place to the right of the session node
+      const kpStartX = activeNodePos.x + 120;
       const kpStartY = activeNodePos.y - (kpCount * 25);
 
       activeNodeKnowledgePoints.forEach((kp, i) => {
@@ -238,7 +307,6 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           },
         });
 
-        // Add edge from session node to KP
         newEdges.push({
           id: `kp-edge-${kp.id}`,
           source: String(activeNodeId),
@@ -255,15 +323,28 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
 
     setNodes(newNodes);
     setEdges(newEdges);
+
+    // Fit view once after initial data load
+    if (!isSameGraph && rfInstance.current && newNodes.length > 0) {
+      if (fitViewTimerRef.current) clearTimeout(fitViewTimerRef.current);
+      fitViewTimerRef.current = setTimeout(() => {
+        rfInstance.current?.fitView({ duration: 300, padding: 0.2 });
+      }, 50);
+    }
   }, [graph, activeNodeId, activeRegion, activeNodeKnowledgePoints, setNodes, setEdges]);
 
-  // Fetch knowledge points when active node changes
+  /* ---------------------------------------------------------------- */
+  /*  Fetch knowledge points                                           */
+  /* ---------------------------------------------------------------- */
   useEffect(() => {
     if (activeNodeId && activeRegionId) {
       fetchKnowledgePointsForNode(activeRegionId, String(activeNodeId));
     }
   }, [activeNodeId, activeRegionId, fetchKnowledgePointsForNode]);
 
+  /* ---------------------------------------------------------------- */
+  /*  Node interactions                                                */
+  /* ---------------------------------------------------------------- */
   const handleNodeClick = useCallback(
     async (_: React.MouseEvent, node: Node) => {
       if (node.id !== activeNodeId) {
@@ -282,26 +363,34 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     [graph, createChildNode]
   );
 
+  const handleNodesChangeWithUserPos = useCallback(
+    (changes: any[]) => {
+      changes.forEach((change: any) => {
+        if (change.type === 'position' && change.position && !change.dragging) {
+          userPositions.current.set(change.id, change.position);
+        }
+      });
+      onNodesChange(changes);
+    },
+    [onNodesChange]
+  );
+
+  /* ---------------------------------------------------------------- */
+  /*  Center / layout helpers                                          */
+  /* ---------------------------------------------------------------- */
   const handleCenterOnNode = useCallback(() => {
     if (!rfInstance.current || !activeNodeId) return;
-
     try {
       const node = rfInstance.current.getNode(activeNodeId);
       if (node && node.position) {
         rfInstance.current.setCenter(
-          node.position.x + 60, // center of node width (approximate)
-          node.position.y + 20, // center of node height (approximate)
+          node.position.x + 60,
+          node.position.y + 20,
           { zoom: 1, duration: 300 }
         );
-      } else {
-        // Fallback: fit view if node not found
-        rfInstance.current.fitView({ duration: 300 });
       }
     } catch (e) {
       console.warn('Center on node failed:', e);
-      try {
-        rfInstance.current?.fitView({ duration: 300 });
-      } catch {}
     }
   }, [activeNodeId]);
 
@@ -309,58 +398,79 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     if (!graph || graph.nodes.length === 0) return;
 
     if (layoutMode === 'force') {
-      // Force-directed layout
-      setNodes(nodes => applyForceLayout(nodes, graph.edges));
+      setNodes(currentNodes => {
+        const sessionNodes = currentNodes.filter(n => !n.id.startsWith('kp-'));
+        const laidOut = applyForceLayout(sessionNodes, graph.edges);
+        const laidOutMap = new Map(laidOut.map(n => [n.id, n.position]));
+        return currentNodes.map(node => {
+          if (node.id.startsWith('kp-')) return node;
+          const newPos = laidOutMap.get(node.id);
+          if (newPos) {
+            userPositions.current.set(node.id, newPos);
+            return { ...node, position: newPos };
+          }
+          return node;
+        });
+      });
     } else {
-      // Dagre hierarchical layout
       const g = new dagre.graphlib.Graph();
       g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 100 });
       g.setDefaultEdgeLabel(() => ({}));
 
-      // Add nodes
-      graph.nodes.forEach(node => {
-        g.setNode(node.id, { width: 150, height: 50 });
-      });
-
-      // Add edges
-      graph.edges.forEach(edge => {
-        g.setEdge(edge.source, edge.target);
-      });
-
-      // Calculate layout
+      graph.nodes.forEach(node => g.setNode(String(node.id), { width: 150, height: 50 }));
+      graph.edges.forEach(edge => g.setEdge(String(edge.source), String(edge.target)));
       dagre.layout(g);
 
-      // Update node positions
-      setNodes(nodes => nodes.map(node => {
-        const pos = g.node(node.id);
-        return {
-          ...node,
-          position: { x: pos.x - 75, y: pos.y - 25 }
-        };
-      }));
+      setNodes(currentNodes => {
+        return currentNodes.map(node => {
+          if (node.id.startsWith('kp-')) return node;
+          const nodeId = String(node.id);
+          if (!g.hasNode(nodeId)) return node;
+          const pos = g.node(nodeId);
+          const newPos = { x: pos.x - 75, y: pos.y - 25 };
+          userPositions.current.set(node.id, newPos);
+          return { ...node, position: newPos };
+        });
+      });
     }
+
+    if (fitViewTimerRef.current) clearTimeout(fitViewTimerRef.current);
+    fitViewTimerRef.current = setTimeout(() => {
+      rfInstance.current?.fitView({ duration: 300, padding: 0.2 });
+    }, 50);
   }, [graph, setNodes, layoutMode]);
 
+  /* ---------------------------------------------------------------- */
+  /*  Drag handlers (transform-based, no inline style pollution)       */
+  /* ---------------------------------------------------------------- */
   const handleMouseDown = useCallback((e: React.MouseEvent, el: HTMLElement) => {
-    if ((e.target as HTMLElement).closest('.react-flow__controls') ||
-        (e.target as HTMLElement).closest('button')) return;
+    if (
+      (e.target as HTMLElement).closest('.react-flow__controls') ||
+      (e.target as HTMLElement).closest('.react-flow__node') ||
+      (e.target as HTMLElement).closest('.react-flow__minimap') ||
+      (e.target as HTMLElement).closest('button')
+    ) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
 
+    const rect = el.getBoundingClientRect();
     dragState.current = {
       isDragging: true,
       startMouseX: e.clientX,
       startMouseY: e.clientY,
-      startPosX: parseInt(el.style.left) || position.x,
-      startPosY: parseInt(el.style.top) || position.y,
+      startPosX: rect.left,
+      startPosY: rect.top,
       hasMoved: false,
       element: el,
       currentMouseX: e.clientX,
       currentMouseY: e.clientY,
+      wasDocked: isDocked,
     };
     el.style.cursor = 'grabbing';
     el.style.transition = 'none';
-  }, [position]);
+  }, [isDocked]);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     const drag = dragState.current;
@@ -376,8 +486,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
       drag.hasMoved = true;
     }
 
-    drag.element.style.left = `${drag.startPosX + dx}px`;
-    drag.element.style.top = `${drag.startPosY + dy}px`;
+    drag.element.style.transform = `translate(${dx}px, ${dy}px)`;
   }, []);
 
   const handleMouseUp = useCallback(() => {
@@ -385,43 +494,43 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     if (!drag.isDragging) return;
 
     drag.isDragging = false;
+    const el = drag.element;
+    drag.element = null; // fix leak
 
-    if (drag.element) {
-      drag.element.style.cursor = 'grab';
-      if (drag.hasMoved) {
-        if (!isDocked) {
-          // Update position state to match the DOM position where we dragged to
-          const finalX = parseInt(drag.element.style.left);
-          const finalY = parseInt(drag.element.style.top);
-          setPosition({ x: finalX, y: finalY });
-        } else {
-          // Docked mode: check if dragged back to dock area
-          const newX = parseInt(drag.element.style.left);
-          const newY = parseInt(drag.element.style.top);
+    if (!el) return;
 
-          const windowHeight = window.innerHeight;
-          const shouldUndock = !(newX < 100 && newY > windowHeight - 300);
+    el.style.cursor = 'grab';
+    el.style.transition = '';
+    el.style.transform = '';
 
-          if (shouldUndock) {
-            // Undock: use flushSync, snap to cursor
-            flushSync(() => {
-              setPosition({ x: drag.currentMouseX - 16, y: drag.currentMouseY - 16 });
-              setIsDocked(false);
-            });
-          } else {
-            // Normal docked drag: update position but stay docked
-            setIsDocked(true);
-            // Update position so if we undock later, we start from here
-            const finalX = drag.startPosX + (drag.currentMouseX - drag.startMouseX);
-            const finalY = drag.startPosY + (drag.currentMouseY - drag.startMouseY);
-            setPosition({ x: finalX, y: finalY });
-          }
-        }
+    if (!drag.hasMoved) return;
+
+    const dx = drag.currentMouseX - drag.startMouseX;
+    const dy = drag.currentMouseY - drag.startMouseY;
+    const finalX = drag.startPosX + dx;
+    const finalY = drag.startPosY + dy;
+
+    if (drag.wasDocked) {
+      // Dock area: bottom-left ~200x200 px
+      const inDockArea = finalX < 200 && finalY > window.innerHeight - 200;
+      if (inDockArea) {
+        // Stay docked
+        setIsDocked(true);
+        return;
       }
+      // Undock to floating, centering window on release point
+      flushSync(() => {
+        setPosition({
+          x: Math.max(0, drag.currentMouseX - 160),
+          y: Math.max(0, drag.currentMouseY - 120),
+        });
+        setIsDocked(false);
+      });
+    } else {
+      // Already floating: just update position
+      setPosition({ x: finalX, y: finalY });
     }
-
-    drag.hasMoved = false;
-  }, [isDocked]);
+  }, []);
 
   useEffect(() => {
     window.addEventListener('mousemove', handleMouseMove);
@@ -432,15 +541,41 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     };
   }, [handleMouseMove, handleMouseUp]);
 
-  // Collapsed circle view - shown when:
-  // 1. isCollapsed is true (user clicked collapse)
-  // 2. OR (isDocked AND sidebarCollapsed) - sidebar collapsed means we collapse too
-  if (isCollapsed || (isDocked && sidebarCollapsed)) {
-    // When collapsed from docked mode, position at dock location
-    const collapsedX = isDocked ? 0 : position.x;
-    const collapsedY = isDocked ? window.innerHeight - 52 : position.y;
+  /* ---------------------------------------------------------------- */
+  /*  Collapse / expand helpers                                        */
+  /* ---------------------------------------------------------------- */
+  const handleCollapse = useCallback(() => {
+    setIsCollapsed(true);
+  }, []);
 
-    // Determine BigBang status for this region
+  const handleExpand = useCallback(() => {
+    // BUG FIX #1: sidebar-collapse deadlock
+    // If we are docked but sidebar is collapsed, undock to floating first
+    if (isDocked && sidebarCollapsed) {
+      setIsDocked(false);
+      setPosition(prev => prev || { x: SIDEBAR_WIDTH, y: 100 });
+    }
+    setIsCollapsed(false);
+  }, [isDocked, sidebarCollapsed, SIDEBAR_WIDTH]);
+
+  const handleDock = useCallback(() => {
+    setIsDocked(true);
+    setIsCollapsed(false);
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /*  Render helpers                                                   */
+  /* ---------------------------------------------------------------- */
+
+  // Determine if we should show the collapsed circle
+  const showCollapsed = isCollapsed || (isDocked && sidebarCollapsed);
+
+  if (showCollapsed) {
+    const collapsedX = isDocked ? 0 : (position?.x ?? SIDEBAR_WIDTH);
+    const collapsedY = isDocked
+      ? window.innerHeight - 52
+      : (position?.y ?? 100);
+
     const bigBangActive = isBigBangAnalyzing && bigBangRegionId === activeRegionId;
     const bigBangDone = !!bigBangResult && bigBangRegionId === activeRegionId;
 
@@ -450,16 +585,13 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         onMouseDown={(e) => {
           e.stopPropagation();
           if (containerRef.current) {
-            const el = containerRef.current;
-            el.style.left = `${e.clientX - 16}px`;
-            el.style.top = `${e.clientY - 16}px`;
-            handleMouseDown(e, el);
+            handleMouseDown(e, containerRef.current);
           }
         }}
         onClick={(e) => {
           e.stopPropagation();
           if (!dragState.current.hasMoved) {
-            setIsCollapsed(false);
+            handleExpand();
           }
         }}
         className="fixed flex items-center justify-center rounded-full shadow-lg"
@@ -473,7 +605,13 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           zIndex: 61,
           cursor: 'grab',
         }}
-        title={bigBangActive ? '大爆炸分析中...' : bigBangDone ? '大爆炸分析完成，点击查看' : '展开知识图谱'}
+        title={
+          bigBangActive
+            ? '大爆炸分析中...'
+            : bigBangDone
+            ? '大爆炸分析完成，点击查看'
+            : '展开知识图谱'
+        }
       >
         {bigBangActive ? (
           <span className="text-sm animate-pulse">💥</span>
@@ -485,32 +623,27 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             style={{ backgroundColor: activeRegion.color }}
           />
         ) : (
-          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--border)' }} />
+          <span
+            className="w-2 h-2 rounded-full"
+            style={{ backgroundColor: 'var(--border)' }}
+          />
         )}
       </div>
     );
   }
 
-  // Docked mode - only shown when sidebar is expanded
+  /* ---------------------------------------------------------------- */
+  /*  Docked mode                                                      */
+  /* ---------------------------------------------------------------- */
   if (isDocked && !sidebarCollapsed) {
     return (
       <div
         ref={containerRef}
         onMouseDown={(e) => {
-          // Only start drag if moved enough from click position
           if (containerRef.current) {
             e.stopPropagation();
-            const el = containerRef.current;
-            const rect = el.getBoundingClientRect();
-            el.style.left = `${rect.left}px`;
-            el.style.top = `${rect.top}px`;
-            el.style.bottom = 'auto';
-            handleMouseDown(e, el);
+            handleMouseDown(e, containerRef.current);
           }
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          // Docked mode is mini view, no expand needed
         }}
         className="fixed rounded-t-xl overflow-hidden shadow-lg"
         style={{
@@ -525,7 +658,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           cursor: 'grab',
         }}
       >
-        {/* Header - 仅显示，无控制按钮 */}
+        {/* Header */}
         <div
           className="flex items-center gap-1.5 px-2 py-1.5"
           style={{
@@ -560,12 +693,11 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             <ReactFlow
               nodes={nodes}
               edges={edges}
-              onNodesChange={onNodesChange}
+              onNodesChange={handleNodesChangeWithUserPos}
               onEdgesChange={onEdgesChange}
               onNodeClick={handleNodeClick}
               onNodeDoubleClick={handleNodeDoubleClick}
               nodeTypes={nodeTypes}
-              fitView
               minZoom={0.1}
               maxZoom={1}
             >
@@ -582,23 +714,31 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
     );
   }
 
-  // Floating mode
+  /* ---------------------------------------------------------------- */
+  /*  Floating mode                                                    */
+  /* ---------------------------------------------------------------- */
+  const floatX = position?.x ?? SIDEBAR_WIDTH;
+  const floatY = position?.y ?? 100;
+
   return (
     <div
       ref={containerRef}
       onMouseDown={(e) => {
-        // Don't start window drag if clicking on ReactFlow nodes or controls
-        if ((e.target as HTMLElement).closest('.react-flow__node') ||
-            (e.target as HTMLElement).closest('.react-flow__controls') ||
-            (e.target as HTMLElement).closest('.react-flow__minimap')) {
+        if (
+          (e.target as HTMLElement).closest('.react-flow__node') ||
+          (e.target as HTMLElement).closest('.react-flow__controls') ||
+          (e.target as HTMLElement).closest('.react-flow__minimap')
+        ) {
           return;
         }
-        containerRef.current && handleMouseDown(e, containerRef.current);
+        if (containerRef.current) {
+          handleMouseDown(e, containerRef.current);
+        }
       }}
       className="fixed rounded-xl shadow-2xl overflow-hidden"
       style={{
-        left: position.x ?? SIDEBAR_WIDTH,
-        top: position.y ?? 100,
+        left: floatX,
+        top: floatY,
         width: '320px',
         height: '240px',
         backgroundColor: 'var(--bg-secondary)',
@@ -613,29 +753,35 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         style={{
           backgroundColor: 'var(--bg-tertiary)',
           borderBottom: '1px solid var(--border)',
-          pointerEvents: 'none', // Let parent handle drags
+          pointerEvents: 'none',
         }}
       >
         <div className="flex items-center gap-2">
           <button
-            onClick={(e) => { e.stopPropagation(); setIsCollapsed(true); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleCollapse();
+            }}
             className="text-xs px-2 py-1 rounded hover:opacity-80"
             style={{
               backgroundColor: 'var(--bg-hover)',
               color: 'var(--text-muted)',
-              pointerEvents: 'auto', // Re-enable click on button
+              pointerEvents: 'auto',
             }}
             title="收起"
           >
             −
           </button>
           <button
-            onClick={(e) => { e.stopPropagation(); setIsDocked(true); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDock();
+            }}
             className="text-xs px-2 py-1 rounded hover:opacity-80"
             style={{
               backgroundColor: 'var(--bg-hover)',
               color: 'var(--text-muted)',
-              pointerEvents: 'auto', // Re-enable click on button
+              pointerEvents: 'auto',
             }}
             title="停靠"
           >
@@ -644,15 +790,15 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
           <button
             onClick={(e) => {
               e.stopPropagation();
-              setLayoutMode(m => m === 'dagre' ? 'force' : 'dagre');
-              layoutGraph();
-              setTimeout(() => handleCenterOnNode(), 50);
+              setLayoutMode(m => (m === 'dagre' ? 'force' : 'dagre'));
+              // layoutGraph reads layoutMode via closure, so defer
+              setTimeout(() => layoutGraph(), 0);
             }}
             className="text-xs px-2 py-1 rounded hover:opacity-80"
             style={{
               backgroundColor: layoutMode === 'force' ? 'var(--accent)' : 'var(--bg-hover)',
               color: layoutMode === 'force' ? 'var(--bg-primary)' : 'var(--text-muted)',
-              pointerEvents: 'auto', // Re-enable click on button
+              pointerEvents: 'auto',
             }}
             title={layoutMode === 'dagre' ? '切换到力导向布局' : '切换到层级布局'}
           >
@@ -687,16 +833,16 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
         ) : (
           <>
             <ReactFlow
-              ref={rfInstance}
-              onInit={(instance) => { rfInstance.current = instance; }}
+              onInit={(instance) => {
+                rfInstance.current = instance;
+              }}
               nodes={nodes}
               edges={edges}
-              onNodesChange={onNodesChange}
+              onNodesChange={handleNodesChangeWithUserPos}
               onEdgesChange={onEdgesChange}
               onNodeClick={handleNodeClick}
               onNodeDoubleClick={handleNodeDoubleClick}
               nodeTypes={nodeTypes}
-              fitView
               minZoom={0.1}
               maxZoom={1.5}
             >
@@ -710,7 +856,10 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
             </ReactFlow>
             {/* Center on active node button */}
             <button
-              onClick={(e) => { e.stopPropagation(); handleCenterOnNode(); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleCenterOnNode();
+              }}
               className="absolute w-7 h-7 flex items-center justify-center rounded hover:opacity-80"
               style={{
                 backgroundColor: 'var(--bg-hover)',
@@ -718,7 +867,7 @@ export default function DraggableKnowledgeGraph({ sidebarCollapsed }: DraggableK
                 bottom: '8px',
                 left: '8px',
                 zIndex: 10,
-                pointerEvents: 'auto', // Re-enable click on button
+                pointerEvents: 'auto',
               }}
               title="回到会话"
             >

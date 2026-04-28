@@ -1,33 +1,31 @@
-"""LLM Service Layer - Abstract provider interface for multi-model support"""
+"""LLM Service - MiniMax provider only, hard-coded config"""
 import os
 import httpx
 import json
 import hashlib
 import logging
-import warnings
-from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
-load_dotenv()
+
+# Hard-coded MiniMax config
+BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic")
+API_KEY = os.getenv("MINIMAX_API_KEY", "") or os.getenv("ANTHROPIC_AUTH_TOKEN", "")
+
+# Thinking mode: enabled with max budget
+THINKING_CONFIG = {"type": "enabled", "budget_tokens": 32000}
+MAX_TOKENS = 64000
 
 # Cache settings
-LLM_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
-LLM_CACHE_ENABLED = os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true"
+LLM_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
 def _get_messages_hash(model: str, messages: list[dict], session_id: str) -> str:
-    """Create a hash of session_id + model + messages for cache key"""
     content = json.dumps({"session_id": session_id, "model": model, "messages": messages}, sort_keys=True)
     return hashlib.sha256(content.encode()).hexdigest()
 
 
 def _get_cache_entry(session_id: str, model: str, messages_hash: str) -> Optional[str]:
-    """Get cached response if exists and not expired"""
-    if not LLM_CACHE_ENABLED:
-        return None
-
     from db import get_cursor
     try:
         with get_cursor() as cursor:
@@ -39,7 +37,6 @@ def _get_cache_entry(session_id: str, model: str, messages_hash: str) -> Optiona
             )
             row = cursor.fetchone()
             if row:
-                # Update last accessed
                 cursor.execute(
                     """UPDATE llm_cache SET last_accessed_at = datetime('now')
                        WHERE session_id = ? AND model = ? AND messages_hash = ?""",
@@ -53,13 +50,8 @@ def _get_cache_entry(session_id: str, model: str, messages_hash: str) -> Optiona
 
 
 def _set_cache_entry(session_id: str, model: str, messages_hash: str, response: str) -> None:
-    """Store response in cache"""
-    if not LLM_CACHE_ENABLED:
-        return
-
     from db import get_cursor
     from datetime import datetime
-
     try:
         cache_id = hashlib.sha256(f"{session_id}:{model}:{messages_hash}".encode()).hexdigest()
         with get_cursor() as cursor:
@@ -73,231 +65,110 @@ def _set_cache_entry(session_id: str, model: str, messages_hash: str, response: 
         logger.warning(f"LLM cache store failed: {e}")
 
 
-class LLMProvider(ABC):
-    """Abstract LLM provider interface"""
+async def stream_chat(
+    model: str, messages: list[dict], session_id: str = ""
+) -> AsyncGenerator[str, None]:
+    """Stream chat completion from MiniMax API"""
+    messages_hash = _get_messages_hash(model, messages, session_id)
+    cached = _get_cache_entry(session_id, model, messages_hash)
+    if cached:
+        for i in range(0, len(cached), 10):
+            yield cached[i:i + 10]
+        return
 
-    @abstractmethod
-    async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
-    ) -> AsyncGenerator[str, None]:
-        """Stream chat completion"""
-        pass
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
 
-    @abstractmethod
-    async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
-    ) -> str:
-        """Non-streaming chat completion"""
-        pass
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream(
+            "POST",
+            f"{BASE_URL}/v1/messages",
+            headers=headers,
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "max_tokens": MAX_TOKENS,
+                "thinking": THINKING_CONFIG,
+            },
+        ) as response:
+            if response.status_code != 200:
+                error_text = await response.aread()
+                yield f"[Error {response.status_code}] {error_text.decode()}"
+                return
 
+            full_response = ""
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        if chunk.get("type") == "content_block_delta":
+                            delta = chunk.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                full_response += text
+                                yield text
+                    except (json.JSONDecodeError, Exception):
+                        pass
 
-class MiniMaxProvider(LLMProvider):
-    """MiniMax Anthropic API provider"""
-
-    def __init__(self):
-        self.base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
-
-    async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
-    ) -> AsyncGenerator[str, None]:
-        """Stream chat completion from MiniMax Anthropic API"""
-        # Check for new MINIMAX_API_KEY first, fall back to ANTHROPIC_API_KEY with warning
-        key = api_key or os.getenv("MINIMAX_API_KEY", "")
-        if not key:
-            old_key = os.getenv("ANTHROPIC_API_KEY", "")
-            if old_key:
-                warnings.warn(
-                    "ANTHROPIC_API_KEY is deprecated for MiniMax. Use MINIMAX_API_KEY instead.",
-                    DeprecationWarning
-                )
-                logger.warning("ANTHROPIC_API_KEY is deprecated. Please use MINIMAX_API_KEY.")
-                key = old_key
-
-        if not key:
-            yield "[Error] No API key configured. Set MINIMAX_API_KEY in .env"
-            return
-
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
-        }
-
-        endpoint = f"{self.base_url}/v1/messages"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            "max_tokens": 4096,
-        }
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST", endpoint, headers=headers, json=payload
-            ) as response:
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    yield f"[Error {response.status_code}] {error_text.decode()}"
-                    return
-
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            type_ = chunk.get("type", "")
-                            if type_ == "content_block_delta":
-                                delta = chunk.get("delta", {})
-                                if delta.get("type") == "text_delta":
-                                    yield delta.get("text", "")
-                            elif type_ == "message_delta":
-                                pass
-                        except json.JSONDecodeError:
-                            pass
-                        except Exception as e:
-                            logger.warning(f"Stream processing error: {e}")
-
-    async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
-    ) -> str:
-        """Non-streaming chat completion"""
-        full_response = ""
-        async for chunk in self.stream_chat(model, messages, api_key):
-            full_response += chunk
-        return full_response
+    _set_cache_entry(session_id, model, messages_hash, full_response)
 
 
-class AnthropicProvider(LLMProvider):
-    """Official Anthropic API provider"""
+async def chat(model: str, messages: list[dict], session_id: str = "") -> str:
+    """Non-streaming chat completion"""
+    messages_hash = _get_messages_hash(model, messages, session_id)
+    cached = _get_cache_entry(session_id, model, messages_hash)
+    if cached:
+        return cached
 
-    def __init__(self):
-        self.base_url = "https://api.anthropic.com"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
 
-    async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
-    ) -> AsyncGenerator[str, None]:
-        """Stream chat completion from official Anthropic API"""
-        key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            f"{BASE_URL}/v1/messages",
+            headers=headers,
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "max_tokens": MAX_TOKENS,
+                "thinking": THINKING_CONFIG,
+            },
+        )
+        if response.status_code != 200:
+            return f"[Error {response.status_code}] {response.text}"
 
-        if not key:
-            yield "[Error] No API key configured. Set ANTHROPIC_API_KEY in .env"
-            return
+        result = response.json()
+        content_blocks = result.get("content", [])
+        text_parts = []
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
 
-        headers = {
-            "x-api-key": key,
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
-            "anthropic-dangerous-direct-browser-access": "true",
-        }
-
-        endpoint = f"{self.base_url}/v1/messages"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            "max_tokens": 1024,
-        }
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST", endpoint, headers=headers, json=payload
-            ) as response:
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    yield f"[Error {response.status_code}] {error_text.decode()}"
-                    return
-
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            type_ = chunk.get("type", "")
-                            if type_ == "content_block_delta":
-                                delta = chunk.get("delta", {})
-                                if delta.get("type") == "text_delta":
-                                    yield delta.get("text", "")
-                            elif type_ == "message_delta":
-                                pass
-                        except json.JSONDecodeError:
-                            pass
-                        except Exception as e:
-                            logger.warning(f"Stream processing error: {e}")
-
-    async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None
-    ) -> str:
-        """Non-streaming chat completion"""
-        full_response = ""
-        async for chunk in self.stream_chat(model, messages, api_key):
-            full_response += chunk
-        return full_response
+        response_text = "".join(text_parts)
+        _set_cache_entry(session_id, model, messages_hash, response_text)
+        return response_text
 
 
 class LLMService:
-    """LLM Service with model-based provider routing"""
+    """Thin wrapper for backward compatibility"""
 
-    # Model name prefixes for routing
-    CLAUDE_PREFIX = "claude-"
-    MINIMAX_PREFIX = "MiniMax-"
-
-    def __init__(self):
-        self._minimax_provider = MiniMaxProvider()
-        self._anthropic_provider = AnthropicProvider()
-
-    def _get_provider_for_model(self, model: str) -> LLMProvider:
-        """Route to the appropriate provider based on model name"""
-        if model.startswith(self.CLAUDE_PREFIX):
-            return self._anthropic_provider
-        return self._minimax_provider
-
-    async def stream_chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None, session_id: Optional[str] = None
-    ) -> AsyncGenerator[str, None]:
-        """Delegate to appropriate provider based on model, with caching"""
-        # Check cache first
-        messages_hash = _get_messages_hash(model, messages, session_id or "")
-        cached = _get_cache_entry(session_id or "", model, messages_hash)
-        if cached:
-            # Yield cached response in chunks to simulate streaming
-            chunk_size = 10
-            for i in range(0, len(cached), chunk_size):
-                yield cached[i:i + chunk_size]
-            return
-
-        # Call provider and buffer for caching
-        provider = self._get_provider_for_model(model)
-        full_response = ""
-        async for chunk in provider.stream_chat(model, messages, api_key):
-            full_response += chunk
+    async def stream_chat(self, model: str, messages: list[dict], api_key=None, session_id: str = ""):
+        async for chunk in stream_chat(model, messages, session_id):
             yield chunk
 
-        # Store in cache after completion
-        _set_cache_entry(session_id or "", model, messages_hash, full_response)
-
-    async def chat(
-        self, model: str, messages: list[dict], api_key: Optional[str] = None, session_id: Optional[str] = None
-    ) -> str:
-        """Delegate to appropriate provider based on model, with caching"""
-        # Check cache first
-        messages_hash = _get_messages_hash(model, messages, session_id or "")
-        cached = _get_cache_entry(session_id or "", model, messages_hash)
-        if cached:
-            return cached
-
-        # Call provider
-        provider = self._get_provider_for_model(model)
-        response = await provider.chat(model, messages, api_key)
-
-        # Store in cache
-        _set_cache_entry(session_id or "", model, messages_hash, response)
-
-        return response
+    async def chat(self, model: str, messages: list[dict], api_key=None, session_id: str = ""):
+        return await chat(model, messages, session_id)
 
 
-# Global instance
 llm_service = LLMService()
